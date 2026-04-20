@@ -1,7 +1,7 @@
 import Head from 'next/head';
 import Link from 'next/link';
-import Nav from '../components/Nav';
-import { useSleeper } from '../hooks/useSleeper';
+import Nav from '../../components/Nav';
+import { useSleeper } from '../../hooks/useSleeper';
 
 const TOOLS = [
   {
