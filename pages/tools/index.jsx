@@ -1,6 +1,6 @@
 import Head from 'next/head';
 import Link from 'next/link';
-import Nav from '../components/Nav';
+import Nav from '../../components/Nav';
 
 const TOOLS = [
   {
