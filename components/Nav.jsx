@@ -31,6 +31,16 @@ export default function Nav() {
     return () => subscription.unsubscribe();
   }, []);
 
+  const [notifCount, setNotifCount] = useState(0);
+
+  useEffect(() => {
+    if (!profile?.id) return;
+    fetch(`/api/notifications?user_id=${profile.id}`)
+      .then(r => r.json())
+      .then(d => setNotifCount((d.notifications || []).filter(n => !n.read).length))
+      .catch(() => {});
+  }, [profile?.id]);
+
   useEffect(() => {
     function handler(e) {
       if (userMenuRef.current && !userMenuRef.current.contains(e.target)) {
@@ -78,6 +88,11 @@ export default function Nav() {
               <button onClick={() => setUserMenu(v => !v)} className={styles.userBtn}>
                 <span className={styles.userAvatar}>{displayName[0].toUpperCase()}</span>
                 <span className={styles.userName}>{displayName}</span>
+                {notifCount > 0 && (
+                  <span style={{ display:'inline-flex', alignItems:'center', justifyContent:'center', width:16, height:16, borderRadius:'50%', background:'#F87171', color:'#fff', fontSize:'0.6rem', fontWeight:700, flexShrink:0 }}>
+                    {notifCount > 9 ? '9+' : notifCount}
+                  </span>
+                )}
                 <span style={{ fontSize: 10, color: 'var(--charcoal-400)', marginLeft: 2 }}>▾</span>
               </button>
 
@@ -90,6 +105,9 @@ export default function Nav() {
                   <div className={styles.dropdownDivider} />
                   <Link href="/my-rankings" className={styles.dropdownItem} onClick={() => setUserMenu(false)}>📋 My rankings</Link>
                   <Link href="/tools" className={styles.dropdownItem} onClick={() => setUserMenu(false)}>🔧 Judge tools</Link>
+                  <Link href="/notifications" className={styles.dropdownItem} onClick={() => { setUserMenu(false); setNotifCount(0); }}>
+                    🔔 Notifications{notifCount > 0 && <span style={{ marginLeft:6, display:'inline-flex', alignItems:'center', justifyContent:'center', width:16, height:16, borderRadius:'50%', background:'#F87171', color:'#fff', fontSize:'0.6rem', fontWeight:700 }}>{notifCount}</span>}
+                  </Link>
                   {profile.tier === 'admin' && (
                     <Link href="/admin" className={styles.dropdownItem} onClick={() => setUserMenu(false)}>◈ Admin dashboard</Link>
                   )}

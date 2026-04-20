@@ -1,8 +1,8 @@
 import Head from 'next/head';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useRouter } from 'next/router';
-import Nav from '../../../components/Nav';
-import { supabase } from '../../../lib/supabase';
+import Nav from '../../components/Nav';
+import { supabase } from '../../lib/supabase';
 
 const POS_COLORS = {
   QB:{ bg:'rgba(239,68,68,0.15)',  text:'#FCA5A5' },
@@ -173,24 +173,96 @@ export default function DevyDraftRoom() {
     setPool(data || []);
   }
 
-  // Pick timer
+  // Pick timer with auto-pick on expiry
+  const autoPickFiredRef = useRef(false);
+
   function resetTimer() {
     if (!draft?.seconds_per_pick || draft?.status !== 'active') return;
     clearInterval(timerRef.current);
     pickStartRef.current = Date.now();
+    autoPickFiredRef.current = false;
     setTimeLeft(draft.seconds_per_pick);
     timerRef.current = setInterval(() => {
-      const elapsed = Math.floor((Date.now() - pickStartRef.current) / 1000);
-      const remaining = Math.max(0, draft.seconds_per_pick - elapsed);
+      const elapsed    = Math.floor((Date.now() - pickStartRef.current) / 1000);
+      const remaining  = Math.max(0, draft.seconds_per_pick - elapsed);
       setTimeLeft(remaining);
-      if (remaining === 0) clearInterval(timerRef.current);
+      if (remaining === 0 && !autoPickFiredRef.current) {
+        autoPickFiredRef.current = true;
+        clearInterval(timerRef.current);
+        // Only commissioner fires the auto-pick to avoid duplicate requests
+        if (isCommish) {
+          fetch('/api/devy/auto-pick', {
+            method:  'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body:    JSON.stringify({ draft_id: draftId, overall: draft.current_pick }),
+          });
+        }
+      }
     }, 1000);
   }
 
   useEffect(() => {
     if (draft?.status === 'active') resetTimer();
     return () => clearInterval(timerRef.current);
-  }, [draft?.status, draft?.current_pick]);
+  }, [draft?.status, draft?.current_pick, isCommish]);
+
+  // Invites
+  const [invites, setInvites]         = useState([]);
+  const [showInvites, setShowInvites] = useState(false);
+  const [inviteUsername, setInviteU]  = useState('');
+  const [inviteRoster, setInviteR]    = useState('');
+  const [invitingUser, setInvitingU]  = useState(false);
+  const [inviteLinks, setInviteLinks] = useState({});  // rosterId -> link
+  const [copiedLink, setCopiedLink]   = useState(null);
+
+  useEffect(() => {
+    if (!draftId || !isCommish) return;
+    fetch('/api/devy/invites', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ action: 'list', draft_id: draftId }),
+    }).then(r => r.json()).then(d => setInvites(d.invites || []));
+  }, [draftId, isCommish]);
+
+  async function generateInviteLink(rosterId, teamName) {
+    const res  = await fetch('/api/devy/invites', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ action: 'create_link', draft_id: draftId, roster_id: rosterId, team_name: teamName }),
+    });
+    const data = await res.json();
+    if (data.success) {
+      setInviteLinks(prev => ({ ...prev, [rosterId]: data.invite_link }));
+    }
+  }
+
+  async function inviteUser() {
+    if (!inviteUsername || !inviteRoster) return;
+    setInvitingU(true);
+    const team = (draft?.draft_order || []).find(t => t.roster_id === parseInt(inviteRoster));
+    const res  = await fetch('/api/devy/invites', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ action: 'invite_user', draft_id: draftId, roster_id: parseInt(inviteRoster), team_name: team?.owner_name, username: inviteUsername }),
+    });
+    const data = await res.json();
+    if (data.success) {
+      setInviteUsername(''); setInviteRoster('');
+      // Refresh invites
+      const listRes = await fetch('/api/devy/invites', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ action:'list', draft_id: draftId }) });
+      const listData = await listRes.json();
+      setInvites(listData.invites || []);
+    } else {
+      setError(data.error);
+    }
+    setInvitingU(false);
+  }
+
+  async function copyLink(link, rosterId) {
+    await navigator.clipboard.writeText(link);
+    setCopiedLink(rosterId);
+    setTimeout(() => setCopiedLink(null), 2500);
+  }
 
   // Derived state
   const draftedIds   = new Set(picks.filter(p => p.is_picked).map(p => p.player_id));
@@ -417,8 +489,14 @@ export default function DevyDraftRoom() {
           <div>
             {/* Tab bar */}
             <div style={{ display:'flex', gap:0, border:'0.5px solid var(--border-default)', borderRadius:'var(--radius-md)', overflow:'hidden', marginBottom:'1rem', width:'fit-content' }}>
-              {[['board','📋 Draft board'],['pool','🎯 Player pool'],['rosters','👥 Rosters'],['trades','🔄 Trades']].map(([id,label]) => (
-                <button key={id} onClick={() => setTab(id)} style={{ padding:'0.5rem 1rem', background: activeTab===id ? 'var(--bg-secondary)':'transparent', color: activeTab===id ? 'var(--text-primary)':'var(--text-muted)', border:'none', borderRight: id!=='trades' ? '0.5px solid var(--border-default)':'none', cursor:'pointer', fontFamily:'var(--font-body)', fontSize:'0.875rem', fontWeight: activeTab===id ? 600:400 }}>
+              {[
+                ['board','📋 Draft board'],
+                ['pool','🎯 Player pool'],
+                ['rosters','👥 Rosters'],
+                ['trades','🔄 Trades'],
+                ...(isCommish ? [['invites','✉ Invites']] : []),
+              ].map(([id,label]) => (
+                <button key={id} onClick={() => setTab(id)} style={{ padding:'0.5rem 1rem', background: activeTab===id ? 'var(--bg-secondary)':'transparent', color: activeTab===id ? 'var(--text-primary)':'var(--text-muted)', border:'none', borderRight: id!=='invites' && !(id==='trades' && !isCommish) ? '0.5px solid var(--border-default)':'none', cursor:'pointer', fontFamily:'var(--font-body)', fontSize:'0.875rem', fontWeight: activeTab===id ? 600:400 }}>
                   {label}
                 </button>
               ))}
@@ -604,6 +682,74 @@ export default function DevyDraftRoom() {
                     </span>
                   </div>
                 ))}
+              </div>
+            )}
+
+            {/* ── INVITES (commissioner only) ── */}
+            {activeTab === 'invites' && isCommish && (
+              <div>
+                <h2 style={{ fontSize:'1rem', fontWeight:600, color:'var(--text-primary)', marginBottom:'1rem' }}>
+                  Invite managers to their team slots
+                </h2>
+
+                {/* Invite by DynastyJudge username */}
+                <div style={{ background:'var(--bg-secondary)', border:'0.5px solid var(--border-subtle)', borderRadius:'var(--radius-lg)', padding:'1.25rem', marginBottom:'1.25rem' }}>
+                  <div style={{ fontSize:'0.875rem', fontWeight:600, color:'var(--text-primary)', marginBottom:'0.75rem' }}>Invite a DynastyJudge member</div>
+                  <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+                    <input type="text" placeholder="Their DynastyJudge username" value={inviteUsername} onChange={e => setInviteU(e.target.value)}
+                      style={{ flex:1, minWidth:180, padding:'0.5rem 0.875rem', borderRadius:'var(--radius-md)', border:'0.5px solid var(--border-default)', background:'var(--bg-primary)', color:'var(--text-primary)', fontSize:'0.875rem', fontFamily:'var(--font-body)', outline:'none' }} />
+                    <select value={inviteRoster} onChange={e => setInviteR(e.target.value)}
+                      style={{ padding:'0.5rem 0.75rem', borderRadius:'var(--radius-md)', border:'0.5px solid var(--border-default)', background:'var(--bg-primary)', color:'var(--text-primary)', fontSize:'0.875rem', fontFamily:'var(--font-body)' }}>
+                      <option value="">Select team...</option>
+                      {(draft?.draft_order || []).map(t => (
+                        <option key={t.roster_id} value={t.roster_id}>{t.owner_name}</option>
+                      ))}
+                    </select>
+                    <button onClick={inviteUser} disabled={invitingUser || !inviteUsername || !inviteRoster}
+                      style={{ padding:'0.5rem 1.125rem', borderRadius:'var(--radius-md)', background:'var(--gold-500)', color:'var(--charcoal-900)', border:'none', fontSize:'0.875rem', fontWeight:700, cursor:'pointer', fontFamily:'var(--font-body)', opacity: invitingUser ? 0.7:1 }}>
+                      {invitingUser ? 'Sending...' : 'Send invite'}
+                    </button>
+                  </div>
+                  <p style={{ fontSize:'0.75rem', color:'var(--text-muted)', marginTop:6 }}>
+                    They'll receive a notification and can join from their DynastyJudge dashboard.
+                  </p>
+                </div>
+
+                {/* Per-team invite links */}
+                <div style={{ fontSize:'0.875rem', fontWeight:600, color:'var(--text-primary)', marginBottom:'0.75rem' }}>
+                  Invite links by team
+                  <span style={{ fontSize:'0.75rem', fontWeight:400, color:'var(--text-muted)', marginLeft:8 }}>Each link is locked to that team slot</span>
+                </div>
+                <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+                  {(draft?.draft_order || []).map(team => {
+                    const invite = invites.find(i => i.roster_id === team.roster_id);
+                    const link   = inviteLinks[team.roster_id] || (invite?.token ? `${typeof window !== 'undefined' ? window.location.origin : 'https://dynastyjudge.vercel.app'}/devy/join/${invite.token}` : null);
+                    const copied = copiedLink === team.roster_id;
+                    return (
+                      <div key={team.roster_id} style={{ display:'flex', alignItems:'center', gap:10, padding:'0.75rem 1rem', background:'var(--bg-secondary)', border:`0.5px solid ${invite?.status === 'accepted' ? 'rgba(34,197,94,0.3)' : 'var(--border-subtle)'}`, borderRadius:'var(--radius-md)', flexWrap:'wrap' }}>
+                        <div style={{ flex:1, minWidth:0 }}>
+                          <div style={{ fontSize:'0.875rem', fontWeight:500, color:'var(--text-primary)' }}>{team.owner_name}</div>
+                          {invite?.assigned_username && (
+                            <div style={{ fontSize:'0.75rem', color: invite.status === 'accepted' ? '#4ADE80':'var(--text-muted)' }}>
+                              {invite.status === 'accepted' ? '✓ Joined: ' : '⏳ Invited: '}{invite.assigned_username}
+                            </div>
+                          )}
+                        </div>
+                        {link ? (
+                          <button onClick={() => copyLink(link, team.roster_id)}
+                            style={{ padding:'0.375rem 0.875rem', borderRadius:'var(--radius-md)', border:'0.5px solid var(--border-default)', background: copied ? 'rgba(34,197,94,0.1)':'transparent', color: copied ? '#4ADE80':'var(--text-secondary)', fontSize:'0.8125rem', cursor:'pointer', fontFamily:'var(--font-body)', flexShrink:0 }}>
+                            {copied ? '✓ Copied!' : '📋 Copy link'}
+                          </button>
+                        ) : (
+                          <button onClick={() => generateInviteLink(team.roster_id, team.owner_name)}
+                            style={{ padding:'0.375rem 0.875rem', borderRadius:'var(--radius-md)', border:'0.5px solid var(--border-default)', background:'transparent', color:'var(--gold-400)', fontSize:'0.8125rem', cursor:'pointer', fontFamily:'var(--font-body)', flexShrink:0 }}>
+                            Generate link
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             )}
 

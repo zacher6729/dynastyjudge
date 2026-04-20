@@ -38,10 +38,9 @@ export default function DevyDraftSetup() {
     setDraftName(`${l.name} — Devy Draft`);
     setLoadingLeague(true);
 
-    const [rostersRes, usersRes, leagueRes] = await Promise.all([
+    const [rostersRes, usersRes] = await Promise.all([
       fetch(`https://api.sleeper.app/v1/league/${l.league_id}/rosters`).then(r => r.json()),
       fetch(`https://api.sleeper.app/v1/league/${l.league_id}/users`).then(r => r.json()),
-      fetch(`https://api.sleeper.app/v1/league/${l.league_id}`).then(r => r.json()),
     ]);
 
     const umap = Object.fromEntries(usersRes.map(u => [u.user_id, u]));
@@ -51,13 +50,6 @@ export default function DevyDraftSetup() {
     // Find my roster
     const mine = rostersRes.find(r => r.owner_id === sleeperId);
     if (mine) setMyRosterId(mine.roster_id);
-
-    // Pull commissioner from Sleeper league data
-    // leagueRes.metadata?.keeper_deadline or just check who is commissioner
-    // Sleeper doesn't expose commissioner directly in league object easily —
-    // the person who created the league is typically user_id in roster[0] context
-    // We use the current logged-in user as commissioner for now (they're creating the draft)
-    // and also record the Sleeper commissioner_id for reference
 
     // Build draft order from last season standings (worst record picks first = highest pick)
     const ordered = [...rostersRes].sort((a, b) => {
