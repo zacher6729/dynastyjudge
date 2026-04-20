@@ -1,7 +1,8 @@
 import Head from 'next/head';
-import { useState, useEffect } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import Nav from '../../components/Nav';
 import Link from 'next/link';
+import { useSleeper, usePlayerSearch } from '../../hooks/useSleeper';
 
 const POS_COLORS = {
   QB: { bg: 'rgba(239,68,68,0.15)',  text: '#FCA5A5' },
@@ -12,124 +13,104 @@ const POS_COLORS = {
 };
 
 export default function PlayerLookup() {
-  const [sleeperId, setSlId]       = useState('');
-  const [search, setSearch]         = useState('');
-  const [players, setPlayers]       = useState([]);
-  const [searching, setSearching]   = useState(false);
-  const [selected, setSelected]     = useState(null);
-  const [leagues, setLeagues]       = useState([]);
-  const [loading, setLoading]       = useState(false);
-  const [refreshing, setRefreshing] = useState(null);
-  const [allPlayers, setAllPlayers] = useState(null); // Sleeper player map
+  const { sleeperId, sleeperUsername, isConnected } = useSleeper();
+  const { results, loading: searching, search }     = usePlayerSearch({ limit: 12 });
 
-  // Load Sleeper user ID and player map
+  const [inputVal, setInputVal]   = useState('');
+  const [selected, setSelected]   = useState(null);
+  const [showDrop, setShowDrop]   = useState(false);
+  const [leagues, setLeagues]     = useState([]);
+  const [loading, setLoading]     = useState(false);
+  const [refreshing, setRefresh]  = useState(null);
+  const inputRef                  = useRef(null);
+  const dropRef                   = useRef(null);
+
+  // Close dropdown on outside click
   useEffect(() => {
-    const id = localStorage.getItem('sleeper_user_id');
-    if (id) setSlId(id);
-
-    // Load player map from Sleeper (cached)
-    const cached = sessionStorage.getItem('sleeper_players');
-    if (cached) {
-      setAllPlayers(JSON.parse(cached));
-    } else {
-      fetch('https://api.sleeper.app/v1/players/nfl')
-        .then(r => r.json())
-        .then(data => {
-          sessionStorage.setItem('sleeper_players', JSON.stringify(data));
-          setAllPlayers(data);
-        });
+    function handler(e) {
+      if (dropRef.current && !dropRef.current.contains(e.target) && !inputRef.current?.contains(e.target)) {
+        setShowDrop(false);
+      }
     }
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
   }, []);
 
-  // Search players from Sleeper player map
-  function handleSearch(q) {
-    setSearch(q);
-    if (!allPlayers || q.length < 2) { setPlayers([]); return; }
-    const lower = q.toLowerCase();
-    const results = Object.entries(allPlayers)
-      .filter(([, p]) => p.full_name?.toLowerCase().includes(lower) && p.active && ['QB','RB','WR','TE','K'].includes(p.position))
-      .slice(0, 10)
-      .map(([id, p]) => ({ id, ...p }));
-    setPlayers(results);
+  function handleInput(val) {
+    setInputVal(val);
+    search(val);
+    setShowDrop(val.length >= 2);
+    if (!val) { setSelected(null); setLeagues([]); }
   }
 
   async function selectPlayer(player) {
     setSelected(player);
-    setSearch(player.full_name);
-    setPlayers([]);
-    if (!sleeperId) return;
-    await findInLeagues(player.player_id || player.id, sleeperId);
+    setInputVal(player.name);
+    setShowDrop(false);
+    setLeagues([]);
+    if (sleeperId && player.sleeper_id) {
+      await findInLeagues(player.sleeper_id, sleeperId);
+    }
   }
 
-  async function findInLeagues(playerId, userId) {
+  async function findInLeagues(sleeperPlayerId, userId) {
     setLoading(true);
-    setLeagues([]);
     try {
-      // Get all leagues
       const leaguesRes = await fetch(`https://api.sleeper.app/v1/user/${userId}/leagues/nfl/2026`);
       const allLeagues = await leaguesRes.json();
 
-      // Check each league's roster
       const results = await Promise.all(allLeagues.map(async league => {
-        const rostersRes = await fetch(`https://api.sleeper.app/v1/league/${league.league_id}/rosters`);
-        const rosters = await rostersRes.json();
-        const myRoster = rosters.find(r => r.owner_id === userId);
-        if (!myRoster) return null;
-
-        const isStarter = myRoster.starters?.includes(playerId);
-        const isOnRoster = myRoster.players?.includes(playerId);
-        if (!isOnRoster) return null;
-
-        // Get matchup info
-        let matchup = null;
         try {
-          const matchupsRes = await fetch(`https://api.sleeper.app/v1/league/${league.league_id}/matchups/1`);
-          const matchups = await matchupsRes.json();
-          matchup = matchups.find(m => m.roster_id === myRoster.roster_id);
-        } catch {}
+          const rostersRes = await fetch(`https://api.sleeper.app/v1/league/${league.league_id}/rosters`);
+          const rosters    = await rostersRes.json();
+          const myRoster   = rosters.find(r => r.owner_id === userId);
+          if (!myRoster) return null;
 
-        return {
-          league_id:    league.league_id,
-          league_name:  league.name,
-          total_rosters: league.total_rosters,
-          scoring:      league.scoring_settings?.rec === 1 ? 'PPR' : league.scoring_settings?.rec === 0.5 ? 'Half PPR' : 'Standard',
-          roster_positions: league.roster_positions || [],
-          is_starter:   isStarter,
-          slot:         isStarter ? myRoster.starters.indexOf(playerId) : 'bench',
-          starters:     myRoster.starters || [],
-          wins:         myRoster.settings?.wins || 0,
-          losses:       myRoster.settings?.losses || 0,
-          matchup,
-        };
+          const isOnRoster = myRoster.players?.includes(sleeperPlayerId);
+          if (!isOnRoster) return null;
+
+          const isStarter = myRoster.starters?.includes(sleeperPlayerId);
+
+          return {
+            league_id:     league.league_id,
+            league_name:   league.name,
+            total_rosters: league.total_rosters,
+            scoring:       league.scoring_settings?.rec === 1 ? 'PPR'
+                         : league.scoring_settings?.rec === 0.5 ? 'Half PPR' : 'Standard',
+            is_starter:    isStarter,
+            wins:          myRoster.settings?.wins   || 0,
+            losses:        myRoster.settings?.losses || 0,
+            roster_id:     myRoster.roster_id,
+          };
+        } catch { return null; }
       }));
 
-      const found = results.filter(Boolean).sort((a, b) => (b.is_starter ? 1 : 0) - (a.is_starter ? 1 : 0));
+      const found = results
+        .filter(Boolean)
+        .sort((a, b) => (b.is_starter ? 1 : 0) - (a.is_starter ? 1 : 0));
+
       setLeagues(found);
-    } catch (err) {
-      console.error(err);
-    }
+    } catch (err) { console.error(err); }
     setLoading(false);
   }
 
   async function refreshLeague(leagueId, idx) {
-    if (!selected || !sleeperId) return;
-    setRefreshing(idx);
+    if (!selected?.sleeper_id || !sleeperId) return;
+    setRefresh(idx);
     try {
       const rostersRes = await fetch(`https://api.sleeper.app/v1/league/${leagueId}/rosters`);
-      const rosters = await rostersRes.json();
-      const myRoster = rosters.find(r => r.owner_id === sleeperId);
-      const playerId = selected.player_id || selected.id;
-      const isStarter = myRoster?.starters?.includes(playerId);
-      const isOnRoster = myRoster?.players?.includes(playerId);
+      const rosters    = await rostersRes.json();
+      const myRoster   = rosters.find(r => r.owner_id === sleeperId);
+      const isOnRoster = myRoster?.players?.includes(selected.sleeper_id);
+      const isStarter  = myRoster?.starters?.includes(selected.sleeper_id);
 
       if (!isOnRoster) {
-        // Player moved off roster — remove from list
         setLeagues(prev => prev.filter((_, i) => i !== idx));
       } else {
         setLeagues(prev => prev.map((l, i) => i === idx ? { ...l, is_starter: isStarter } : l));
       }
     } catch {}
-    setRefreshing(null);
+    setRefresh(null);
   }
 
   const starters = leagues.filter(l => l.is_starter);
@@ -139,7 +120,7 @@ export default function PlayerLookup() {
     <>
       <Head>
         <title>Player → Leagues — DynastyJudge</title>
-        <meta name="description" content="Find every Sleeper league where a player is on your roster. See if they're starting or on bench across all your leagues." />
+        <meta name="description" content="Find every Sleeper league where a player is on your roster." />
       </Head>
       <Nav />
 
@@ -154,7 +135,7 @@ export default function PlayerLookup() {
             </div>
             <h1 className="display-md" style={{ marginBottom: 8 }}>Player → Leagues</h1>
             <p className="body-md" style={{ color: 'var(--text-secondary)', maxWidth: 520 }}>
-              Search any player and instantly see every Sleeper league where they're on your roster — starter or bench — so you know exactly which lineups need updating.
+              Search any player and see every league where they're on your roster — starter or bench.
             </p>
           </div>
         </div>
@@ -162,78 +143,110 @@ export default function PlayerLookup() {
         <div className="container" style={{ paddingTop: '1.5rem' }}>
 
           {/* Sleeper connection warning */}
-          {!sleeperId && (
+          {!isConnected && (
             <div style={{ padding: '1rem 1.25rem', background: 'rgba(200,151,58,0.08)', border: '0.5px solid var(--border-gold)', borderRadius: 'var(--radius-md)', marginBottom: '1.5rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-              <span style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>Connect your Sleeper account to search across your actual leagues.</span>
+              <span style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
+                Connect your Sleeper account to search across your actual leagues.
+              </span>
               <Link href="/tools/connect-sleeper" className="btn btn-primary btn-sm">Connect Sleeper</Link>
             </div>
           )}
 
-          {/* Search */}
+          {isConnected && (
+            <div style={{ fontSize: '0.8125rem', color: 'var(--text-muted)', marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ color: '#4ADE80' }}>●</span>
+              Connected as @{sleeperUsername}
+              <Link href="/tools/connect-sleeper" style={{ color: 'var(--text-muted)', marginLeft: 4 }}>Switch account</Link>
+            </div>
+          )}
+
+          {/* Search input with autocomplete */}
           <div style={{ position: 'relative', maxWidth: 480, marginBottom: '1.5rem' }}>
             <input
+              ref={inputRef}
               type="text"
               placeholder="Search player name..."
-              value={search}
-              onChange={e => handleSearch(e.target.value)}
+              value={inputVal}
+              onChange={e => handleInput(e.target.value)}
+              onFocus={() => inputVal.length >= 2 && setShowDrop(true)}
               style={{ width: '100%', padding: '0.875rem 1.125rem', borderRadius: 'var(--radius-md)', border: '0.5px solid var(--border-default)', background: 'var(--bg-secondary)', color: 'var(--text-primary)', fontSize: '1rem', fontFamily: 'var(--font-body)', outline: 'none' }}
             />
-            {players.length > 0 && (
-              <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, background: 'var(--bg-secondary)', border: '0.5px solid var(--border-default)', borderRadius: 'var(--radius-md)', zIndex: 50, marginTop: 4, overflow: 'hidden' }}>
-                {players.map(p => {
+
+            {/* Loading indicator */}
+            {searching && (
+              <div style={{ position: 'absolute', right: '1rem', top: '50%', transform: 'translateY(-50%)', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                Searching...
+              </div>
+            )}
+
+            {/* Autocomplete dropdown */}
+            {showDrop && results.length > 0 && (
+              <div ref={dropRef} style={{ position: 'absolute', top: 'calc(100% + 4px)', left: 0, right: 0, background: 'var(--bg-secondary)', border: '0.5px solid var(--border-default)', borderRadius: 'var(--radius-md)', zIndex: 50, overflow: 'hidden', boxShadow: '0 8px 24px rgba(0,0,0,0.2)' }}>
+                {results.map(p => {
                   const pos = POS_COLORS[p.position] || { bg: 'rgba(156,163,175,0.15)', text: '#D1D5DB' };
                   return (
                     <button
                       key={p.id}
-                      onClick={() => selectPlayer(p)}
-                      style={{ display: 'flex', alignItems: 'center', gap: 10, width: '100%', padding: '0.625rem 1rem', background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left', borderBottom: '0.5px solid var(--border-subtle)', fontFamily: 'var(--font-body)' }}
+                      onMouseDown={e => { e.preventDefault(); selectPlayer(p); }}
+                      style={{ display: 'flex', alignItems: 'center', gap: 10, width: '100%', padding: '0.625rem 1rem', background: 'none', border: 'none', borderBottom: '0.5px solid var(--border-subtle)', cursor: 'pointer', textAlign: 'left', fontFamily: 'var(--font-body)', transition: 'background .1s' }}
                       onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-tertiary)'}
                       onMouseLeave={e => e.currentTarget.style.background = 'none'}
                     >
-                      <span style={{ display: 'inline-block', padding: '1px 6px', borderRadius: 4, fontSize: '0.7rem', fontWeight: 700, background: pos.bg, color: pos.text }}>{p.position}</span>
-                      <span style={{ fontSize: '0.9375rem', color: 'var(--text-primary)', fontWeight: 500 }}>{p.full_name}</span>
-                      <span style={{ fontSize: '0.8125rem', color: 'var(--text-muted)' }}>{p.team}</span>
+                      <span style={{ display: 'inline-block', padding: '1px 6px', borderRadius: 4, fontSize: '0.7rem', fontWeight: 700, background: pos.bg, color: pos.text, flexShrink: 0 }}>{p.position}</span>
+                      <span style={{ flex: 1, fontSize: '0.9375rem', color: 'var(--text-primary)', fontWeight: 500 }}>{p.name}</span>
+                      <span style={{ fontSize: '0.8125rem', color: 'var(--text-muted)' }}>{p.nfl_team}</span>
+                      {p.injury_status && <span style={{ fontSize: '0.7rem', color: '#F87171' }}>{p.injury_status}</span>}
                     </button>
                   );
                 })}
               </div>
             )}
+
+            {/* No results */}
+            {showDrop && !searching && results.length === 0 && inputVal.length >= 2 && (
+              <div style={{ position: 'absolute', top: 'calc(100% + 4px)', left: 0, right: 0, background: 'var(--bg-secondary)', border: '0.5px solid var(--border-default)', borderRadius: 'var(--radius-md)', padding: '0.875rem 1rem', fontSize: '0.875rem', color: 'var(--text-muted)', zIndex: 50 }}>
+                No players found for "{inputVal}"
+              </div>
+            )}
           </div>
 
-          {/* Loading */}
+          {/* Loading leagues */}
           {loading && (
             <div style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-muted)' }}>
-              Scanning your leagues...
+              Scanning your {isConnected ? 'leagues' : 'Sleeper account'}...
+            </div>
+          )}
+
+          {/* No results */}
+          {!loading && selected && leagues.length === 0 && !loading && (
+            <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.875rem', background: 'var(--bg-secondary)', borderRadius: 'var(--radius-lg)', border: '0.5px solid var(--border-subtle)' }}>
+              {isConnected
+                ? `${selected.name} is not on your roster in any 2026 league.`
+                : 'Connect your Sleeper account to see which leagues this player is in.'}
             </div>
           )}
 
           {/* Results */}
-          {!loading && selected && leagues.length === 0 && (
-            <div style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-muted)' }}>
-              {selected.full_name} is not on your roster in any 2026 league.
-            </div>
-          )}
-
           {!loading && leagues.length > 0 && (
             <>
-              {/* Summary */}
-              <div style={{ display: 'flex', gap: 12, marginBottom: '1.5rem', flexWrap: 'wrap' }}>
-                <div style={{ padding: '0.875rem 1.25rem', background: 'var(--bg-secondary)', border: '0.5px solid var(--border-subtle)', borderRadius: 'var(--radius-md)' }}>
+              {/* Summary pills */}
+              <div style={{ display: 'flex', gap: 10, marginBottom: '1.25rem', flexWrap: 'wrap' }}>
+                <div style={{ padding: '0.75rem 1.25rem', background: 'var(--bg-secondary)', border: '0.5px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', textAlign: 'center' }}>
                   <div style={{ fontSize: '1.5rem', fontWeight: 700, color: 'var(--text-primary)' }}>{leagues.length}</div>
-                  <div style={{ fontSize: '0.8125rem', color: 'var(--text-muted)' }}>total leagues</div>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>leagues</div>
                 </div>
-                <div style={{ padding: '0.875rem 1.25rem', background: starters.length > 0 ? 'rgba(239,68,68,0.08)' : 'var(--bg-secondary)', border: `0.5px solid ${starters.length > 0 ? 'rgba(239,68,68,0.3)' : 'var(--border-subtle)'}`, borderRadius: 'var(--radius-md)' }}>
-                  <div style={{ fontSize: '1.5rem', fontWeight: 700, color: starters.length > 0 ? '#F87171' : 'var(--text-primary)' }}>{starters.length}</div>
-                  <div style={{ fontSize: '0.8125rem', color: 'var(--text-muted)' }}>starting</div>
+                <div style={{ padding: '0.75rem 1.25rem', background: starters.length ? 'rgba(239,68,68,0.08)' : 'var(--bg-secondary)', border: `0.5px solid ${starters.length ? 'rgba(239,68,68,0.3)' : 'var(--border-subtle)'}`, borderRadius: 'var(--radius-md)', textAlign: 'center' }}>
+                  <div style={{ fontSize: '1.5rem', fontWeight: 700, color: starters.length ? '#F87171' : 'var(--text-primary)' }}>{starters.length}</div>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>starting</div>
                 </div>
-                <div style={{ padding: '0.875rem 1.25rem', background: 'var(--bg-secondary)', border: '0.5px solid var(--border-subtle)', borderRadius: 'var(--radius-md)' }}>
+                <div style={{ padding: '0.75rem 1.25rem', background: 'var(--bg-secondary)', border: '0.5px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', textAlign: 'center' }}>
                   <div style={{ fontSize: '1.5rem', fontWeight: 700, color: 'var(--text-primary)' }}>{bench.length}</div>
-                  <div style={{ fontSize: '0.8125rem', color: 'var(--text-muted)' }}>on bench</div>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>bench</div>
                 </div>
               </div>
 
-              {/* League table header */}
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 100px 80px 80px 80px', padding: '0.5rem 1rem', borderBottom: '0.5px solid var(--border-default)', fontSize: '0.7rem', fontWeight: 600, color: 'var(--text-muted)', letterSpacing: '0.06em', textTransform: 'uppercase' }}>
+              {/* Table header */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 110px 80px 80px 80px', padding: '0.5rem 1rem', borderBottom: '0.5px solid var(--border-default)', fontSize: '0.7rem', fontWeight: 600, color: 'var(--text-muted)', letterSpacing: '0.06em', textTransform: 'uppercase' }}>
                 <span>League</span>
                 <span style={{ textAlign: 'center' }}>Status</span>
                 <span style={{ textAlign: 'center' }}>Record</span>
@@ -244,7 +257,7 @@ export default function PlayerLookup() {
               {leagues.map((l, idx) => (
                 <div
                   key={l.league_id}
-                  style={{ display: 'grid', gridTemplateColumns: '1fr 100px 80px 80px 80px', padding: '0.875rem 1rem', borderBottom: '0.5px solid var(--border-subtle)', alignItems: 'center', transition: 'background .1s' }}
+                  style={{ display: 'grid', gridTemplateColumns: '1fr 110px 80px 80px 80px', padding: '0.875rem 1rem', borderBottom: '0.5px solid var(--border-subtle)', alignItems: 'center', transition: 'background .1s' }}
                   onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-secondary)'}
                   onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
                 >
@@ -253,12 +266,7 @@ export default function PlayerLookup() {
                     <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{l.total_rosters} teams</div>
                   </div>
                   <div style={{ textAlign: 'center' }}>
-                    <span style={{
-                      display: 'inline-block', padding: '2px 8px', borderRadius: 99,
-                      fontSize: '0.75rem', fontWeight: 600,
-                      background: l.is_starter ? 'rgba(34,197,94,0.15)' : 'rgba(156,163,175,0.15)',
-                      color:      l.is_starter ? '#4ADE80'              : '#9CA3AF',
-                    }}>
+                    <span style={{ display: 'inline-block', padding: '2px 8px', borderRadius: 99, fontSize: '0.75rem', fontWeight: 600, background: l.is_starter ? 'rgba(34,197,94,0.15)' : 'rgba(156,163,175,0.15)', color: l.is_starter ? '#4ADE80' : '#9CA3AF' }}>
                       {l.is_starter ? '▶ Starting' : '— Bench'}
                     </span>
                   </div>
@@ -272,7 +280,8 @@ export default function PlayerLookup() {
                     <button
                       onClick={() => refreshLeague(l.league_id, idx)}
                       disabled={refreshing === idx}
-                      style={{ padding: '4px 10px', borderRadius: 'var(--radius-sm)', border: '0.5px solid var(--border-subtle)', background: 'transparent', color: 'var(--text-muted)', fontSize: '0.75rem', cursor: 'pointer', fontFamily: 'var(--font-body)' }}>
+                      title="Refresh to check if lineup has been updated"
+                      style={{ padding: '4px 10px', borderRadius: 'var(--radius-sm)', border: '0.5px solid var(--border-subtle)', background: 'transparent', color: 'var(--text-muted)', fontSize: '0.875rem', cursor: 'pointer', fontFamily: 'var(--font-body)' }}>
                       {refreshing === idx ? '...' : '↻'}
                     </button>
                   </div>
