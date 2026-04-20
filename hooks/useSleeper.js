@@ -17,6 +17,7 @@ export function useSleeper() {
   const [sleeperAvatar, setAvatar] = useState('');
   const [leagues, setLeagues]      = useState([]);
   const [connecting, setConnecting] = useState(false);
+  const [loading, setLoading]      = useState(true); // true until we've checked profile
   const [loadingLeagues, setLoadingLeagues] = useState(false);
   const [error, setError]          = useState('');
   const [session, setSession]      = useState(null);
@@ -28,7 +29,6 @@ export function useSleeper() {
       setSession(s);
 
       if (s) {
-        // Load from Supabase profile
         const { data: profile } = await supabase
           .from('profiles')
           .select('sleeper_user_id, sleeper_username, sleeper_avatar')
@@ -39,6 +39,7 @@ export function useSleeper() {
           setId(profile.sleeper_user_id);
           setUser(profile.sleeper_username || '');
           setAvatar(profile.sleeper_avatar || '');
+          setLoading(false);
           return;
         }
       }
@@ -47,6 +48,7 @@ export function useSleeper() {
       const lsId   = localStorage.getItem('sleeper_user_id');
       const lsUser = localStorage.getItem('sleeper_username');
       if (lsId) { setId(lsId); setUser(lsUser || ''); }
+      setLoading(false);
     }
     load();
   }, []);
@@ -143,6 +145,7 @@ export function useSleeper() {
     sleeperAvatar,
     leagues,
     connecting,
+    loading,
     loadingLeagues,
     error,
     isConnected: !!sleeperId,

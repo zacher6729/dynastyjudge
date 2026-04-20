@@ -1,6 +1,7 @@
 import Head from 'next/head';
 import Link from 'next/link';
-import Nav from '../../components/Nav';
+import Nav from '../components/Nav';
+import { useSleeper } from '../hooks/useSleeper';
 
 const TOOLS = [
   {
@@ -60,6 +61,8 @@ const TOOLS = [
 ];
 
 export default function ToolsHub() {
+  const { isConnected, sleeperUsername, loading: sleeperLoading } = useSleeper();
+
   return (
     <>
       <Head>
@@ -84,21 +87,32 @@ export default function ToolsHub() {
           </div>
         </div>
 
-        {/* Connect Sleeper CTA */}
-        <div style={{ background: 'rgba(200,151,58,0.06)', borderBottom: '0.5px solid var(--border-gold)' }}>
-          <div className="container" style={{ padding: '1rem 1.5rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <span style={{ fontSize: '1.125rem' }}>🔗</span>
-              <div>
-                <span style={{ fontSize: '0.9375rem', fontWeight: 600, color: 'var(--text-primary)' }}>Connect your Sleeper account</span>
-                <span style={{ fontSize: '0.8125rem', color: 'var(--text-muted)', marginLeft: 8 }}>to unlock personalized recommendations across all tools</span>
+        {/* Connect Sleeper CTA — only show after load confirms no connection */}
+        {!sleeperLoading && (
+          <div style={{ background: isConnected ? 'rgba(34,197,94,0.06)' : 'rgba(200,151,58,0.06)', borderBottom: `0.5px solid ${isConnected ? 'rgba(34,197,94,0.2)' : 'var(--border-gold)'}` }}>
+            <div className="container" style={{ padding: '1rem 1.5rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <span style={{ fontSize: '1.125rem' }}>{isConnected ? '✓' : '🔗'}</span>
+                <div>
+                  {isConnected ? (
+                    <>
+                      <span style={{ fontSize: '0.9375rem', fontWeight: 600, color: '#4ADE80' }}>Sleeper connected</span>
+                      <span style={{ fontSize: '0.8125rem', color: 'var(--text-muted)', marginLeft: 8 }}>@{sleeperUsername} · all tools are personalized to your leagues</span>
+                    </>
+                  ) : (
+                    <>
+                      <span style={{ fontSize: '0.9375rem', fontWeight: 600, color: 'var(--text-primary)' }}>Connect your Sleeper account</span>
+                      <span style={{ fontSize: '0.8125rem', color: 'var(--text-muted)', marginLeft: 8 }}>to unlock personalized recommendations across all tools</span>
+                    </>
+                  )}
+                </div>
               </div>
+              <Link href="/tools/connect-sleeper" className="btn btn-primary btn-sm">
+                {isConnected ? 'Manage connection →' : 'Connect Sleeper →'}
+              </Link>
             </div>
-            <Link href="/tools/connect-sleeper" className="btn btn-primary btn-sm">
-              Connect Sleeper →
-            </Link>
           </div>
-        </div>
+        )}
 
         {/* Tools grid */}
         <div className="container" style={{ paddingTop: '2rem' }}>
