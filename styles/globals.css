@@ -1,0 +1,185 @@
+/* DynastyJudge — Global Design System */
+/* Charcoal + Gold + Courtroom aesthetic */
+
+@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=Inter:wght@300;400;500;600&display=swap');
+
+:root {
+  /* Core palette */
+  --charcoal-950: #0E0E0F;
+  --charcoal-900: #1C1C1E;
+  --charcoal-800: #2A2A2D;
+  --charcoal-700: #3A3A3E;
+  --charcoal-600: #4A4A50;
+  --charcoal-500: #6B6B74;
+  --charcoal-400: #8E8E98;
+  --charcoal-200: #C8C8D0;
+  --charcoal-100: #E8E8EC;
+  --charcoal-50:  #F4F4F6;
+
+  --gold-500: #C8973A;
+  --gold-400: #E0AA48;
+  --gold-300: #EFC96A;
+  --gold-200: #F5DFA0;
+  --gold-100: #FBF3DC;
+
+  --white: #FFFFFF;
+  --off-white: #F8F8FA;
+
+  /* Semantic */
+  --bg-primary:   var(--charcoal-900);
+  --bg-secondary: var(--charcoal-800);
+  --bg-tertiary:  var(--charcoal-700);
+  --bg-surface:   var(--charcoal-800);
+  --bg-card:      var(--charcoal-800);
+
+  --text-primary:   #F0F0F4;
+  --text-secondary: var(--charcoal-200);
+  --text-muted:     var(--charcoal-400);
+  --text-gold:      var(--gold-400);
+
+  --border-subtle:  rgba(255,255,255,0.07);
+  --border-default: rgba(255,255,255,0.12);
+  --border-strong:  rgba(255,255,255,0.22);
+  --border-gold:    rgba(200,151,58,0.4);
+
+  --accent:         var(--gold-500);
+  --accent-hover:   var(--gold-400);
+
+  /* Typography */
+  --font-display: 'Playfair Display', Georgia, serif;
+  --font-body:    'Inter', system-ui, sans-serif;
+
+  /* Spacing */
+  --radius-sm:  6px;
+  --radius-md:  10px;
+  --radius-lg:  16px;
+  --radius-xl:  24px;
+
+  /* Transitions */
+  --transition: 150ms ease;
+}
+
+/* Light mode override for content pages */
+.light {
+  --bg-primary:   var(--off-white);
+  --bg-secondary: var(--white);
+  --bg-card:      var(--white);
+  --text-primary:   var(--charcoal-900);
+  --text-secondary: var(--charcoal-600);
+  --text-muted:     var(--charcoal-400);
+  --border-subtle:  rgba(0,0,0,0.06);
+  --border-default: rgba(0,0,0,0.10);
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html { scroll-behavior: smooth; -webkit-font-smoothing: antialiased; }
+
+body {
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: var(--font-body);
+  font-size: 16px;
+  line-height: 1.6;
+}
+
+/* Typography scale */
+.display-xl { font-family: var(--font-display); font-size: clamp(3rem, 6vw, 5.5rem); font-weight: 900; line-height: 1.0; letter-spacing: -0.02em; }
+.display-lg { font-family: var(--font-display); font-size: clamp(2rem, 4vw, 3.5rem); font-weight: 700; line-height: 1.1; }
+.display-md { font-family: var(--font-display); font-size: clamp(1.5rem, 3vw, 2.5rem); font-weight: 700; line-height: 1.15; }
+.heading-lg  { font-size: 1.5rem; font-weight: 600; line-height: 1.3; }
+.heading-md  { font-size: 1.125rem; font-weight: 600; line-height: 1.4; }
+.heading-sm  { font-size: 0.9375rem; font-weight: 600; line-height: 1.4; }
+.body-lg     { font-size: 1.0625rem; line-height: 1.7; }
+.body-md     { font-size: 0.9375rem; line-height: 1.65; }
+.body-sm     { font-size: 0.8125rem; line-height: 1.6; }
+.label       { font-size: 0.75rem; font-weight: 500; letter-spacing: 0.08em; text-transform: uppercase; }
+
+/* Gold accent text */
+.text-gold { color: var(--text-gold); }
+.text-muted { color: var(--text-muted); }
+
+/* Links */
+a { color: var(--text-gold); text-decoration: none; transition: color var(--transition); }
+a:hover { color: var(--gold-300); }
+
+/* Layout */
+.container { max-width: 1200px; margin: 0 auto; padding: 0 1.5rem; }
+.container-sm { max-width: 800px; margin: 0 auto; padding: 0 1.5rem; }
+
+/* Cards */
+.card {
+  background: var(--bg-card);
+  border: 0.5px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  transition: border-color var(--transition), transform var(--transition);
+}
+.card:hover { border-color: var(--border-gold); transform: translateY(-2px); }
+
+/* Gold accent bar — courtroom motif */
+.gold-bar { width: 48px; height: 3px; background: var(--gold-500); border-radius: 2px; }
+.gold-bar-full { width: 100%; height: 1px; background: linear-gradient(90deg, var(--gold-500) 0%, transparent 100%); }
+
+/* Verdict badge — core courtroom UI element */
+.verdict {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 12px; border-radius: 99px;
+  font-size: 0.75rem; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;
+}
+.verdict-buy  { background: rgba(34,197,94,0.15); color: #4ADE80; border: 0.5px solid rgba(34,197,94,0.3); }
+.verdict-sell { background: rgba(239,68,68,0.15); color: #F87171; border: 0.5px solid rgba(239,68,68,0.3); }
+.verdict-hold { background: rgba(200,151,58,0.15); color: var(--gold-300); border: 0.5px solid var(--border-gold); }
+.verdict-stash{ background: rgba(139,92,246,0.15); color: #C4B5FD; border: 0.5px solid rgba(139,92,246,0.3); }
+
+/* Position badges */
+.pos { display: inline-block; padding: 2px 7px; border-radius: 4px; font-size: 0.7rem; font-weight: 700; letter-spacing: 0.04em; }
+.pos-qb { background: rgba(239,68,68,0.2); color: #FCA5A5; }
+.pos-rb { background: rgba(34,197,94,0.2); color: #86EFAC; }
+.pos-wr { background: rgba(59,130,246,0.2); color: #93C5FD; }
+.pos-te { background: rgba(251,191,36,0.2); color: #FDE68A; }
+.pos-k  { background: rgba(156,163,175,0.2); color: #D1D5DB; }
+
+/* Buttons */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  padding: 0.75rem 1.5rem; border-radius: var(--radius-md);
+  font-family: var(--font-body); font-size: 0.9375rem; font-weight: 600;
+  cursor: pointer; border: none; transition: all var(--transition); text-decoration: none;
+}
+.btn-primary { background: var(--gold-500); color: var(--charcoal-900); }
+.btn-primary:hover { background: var(--gold-400); color: var(--charcoal-900); transform: translateY(-1px); }
+.btn-ghost { background: transparent; color: var(--text-primary); border: 0.5px solid var(--border-default); }
+.btn-ghost:hover { border-color: var(--border-gold); color: var(--text-gold); }
+.btn-sm { padding: 0.5rem 1rem; font-size: 0.8125rem; }
+
+/* Dividers */
+hr { border: none; border-top: 0.5px solid var(--border-subtle); }
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: var(--bg-primary); }
+::-webkit-scrollbar-thumb { background: var(--charcoal-600); border-radius: 3px; }
+
+/* Animations */
+@keyframes fadeUp { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: translateY(0); } }
+.fade-up { animation: fadeUp 0.5s ease forwards; }
+@keyframes pulse-gold { 0%,100% { box-shadow: 0 0 0 0 rgba(200,151,58,0); } 50% { box-shadow: 0 0 0 6px rgba(200,151,58,0.15); } }
+.pulse-gold { animation: pulse-gold 2s infinite; }
+
+/* Utilities */
+.flex { display: flex; }
+.flex-col { display: flex; flex-direction: column; }
+.items-center { align-items: center; }
+.justify-between { justify-content: space-between; }
+.gap-2 { gap: 0.5rem; }
+.gap-4 { gap: 1rem; }
+.gap-6 { gap: 1.5rem; }
+.gap-8 { gap: 2rem; }
+.grid-2 { display: grid; grid-template-columns: repeat(2,1fr); gap: 1.5rem; }
+.grid-3 { display: grid; grid-template-columns: repeat(3,1fr); gap: 1.5rem; }
+.grid-4 { display: grid; grid-template-columns: repeat(4,1fr); gap: 1rem; }
+@media(max-width:768px){
+  .grid-2,.grid-3,.grid-4 { grid-template-columns: 1fr; }
+  .hide-mobile { display: none; }
+}
