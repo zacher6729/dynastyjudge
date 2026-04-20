@@ -1,5 +1,5 @@
 import Head from 'next/head';
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import Nav from '../../components/Nav';
 import Link from 'next/link';
 import { useSleeper } from '../../hooks/useSleeper';
@@ -7,11 +7,13 @@ import { supabase } from '../../lib/supabase';
 
 // ── Pick values ───────────────────────────────────────────────────────────────
 const PICK_BASE = {
-  '2025': { 1: { early:3200,mid:2400,late:1800 }, 2: { early:900,mid:650,late:450 } },
-  '2026': { 1: { early:4800,mid:3600,late:2600 }, 2: { early:1400,mid:1000,late:700 } },
-  '2027': { 1: { early:5800,mid:4400,late:3200 }, 2: { early:1800,mid:1300,late:900 } },
-  '2028': { 1: { early:5200,mid:4000,late:2800 }, 2: { early:1600,mid:1200,late:800 } },
+  '2026': { 1: { early:4800, mid:3600, late:2600 }, 2: { early:1400, mid:1000, late:700  } },
+  '2027': { 1: { early:5800, mid:4400, late:3200 }, 2: { early:1800, mid:1300, late:900  } },
+  '2028': { 1: { early:5200, mid:4000, late:2800 }, 2: { early:1600, mid:1200, late:800  } },
+  '2029': { 1: { early:4800, mid:3600, late:2600 }, 2: { early:1400, mid:1000, late:700  } },
 };
+
+const SKILL_POS = ['QB','RB','WR','TE','K'];
 
 const POS_COLORS = {
   QB:{ bg:'rgba(239,68,68,0.15)',  text:'#FCA5A5' },
@@ -22,35 +24,132 @@ const POS_COLORS = {
 };
 
 function fv(v) {
-  if (!v) return '—';
+  if (!v || v === 0) return '—';
   return v >= 1000 ? `${(v/1000).toFixed(1)}k` : String(v);
 }
 
-function adjVal(player, format, valMap) {
-  const base = valMap?.[player.player_id] || valMap?.[player.id] || player.value || 500;
-  if (format === 'sf'     && player.position === 'QB') return Math.round(base * 1.6);
-  if (format === 'teprem' && player.position === 'TE') return Math.round(base * 1.4);
+function adjVal(item, format, valMap) {
+  if (item.type === 'pick') return item.value || 0;
+  const base = valMap?.[item.player_id] || item.value || 500;
+  if (format === 'sf'     && item.position === 'QB') return Math.round(base * 1.6);
+  if (format === 'teprem' && item.position === 'TE') return Math.round(base * 1.4);
   return base;
 }
 
-// ── Small components ──────────────────────────────────────────────────────────
+// Enrich sleeper player IDs → full objects using a player map
+function enrichPlayers(ids, pmap, valMap) {
+  if (!ids?.length || !pmap || !Object.keys(pmap).length) return [];
+  return ids
+    .map(id => {
+      const p = pmap[id];
+      if (!p || !SKILL_POS.includes(p.position)) return null;
+      return {
+        type:      'player',
+        player_id: id,
+        full_name: p.full_name || p.first_name + ' ' + p.last_name,
+        position:  p.position,
+        team:      p.team || p.nfl_team,
+        age:       p.age,
+        value:     valMap?.[id] || 500,
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => {
+      const order = { QB:0, WR:1, RB:2, TE:3, K:4 };
+      return (order[a.position]||9) - (order[b.position]||9)
+          || (b.value || 0) - (a.value || 0);
+    });
+}
+
+// Build picks for a specific roster using traded_picks data
+function buildPicksForRoster(rosterId, tradedPicks, allRosters, userMap) {
+  const picks = [];
+  const currentYear = 2026;
+  const years = [currentYear, currentYear + 1, currentYear + 2];
+
+  years.forEach(yr => {
+    const yrStr = String(yr);
+
+    // Which original picks does this roster own?
+    // Start with all teams' original picks
+    allRosters.forEach(r => {
+      [1, 2].forEach(round => {
+        // Who originally owned this pick
+        const originalOwner = r.roster_id;
+
+        // Has this pick been traded?
+        // Find the final destination of this pick in the traded_picks chain
+        const tradedEntry = tradedPicks.find(tp =>
+          tp.roster_id === originalOwner &&   // original team
+          tp.round === round &&
+          tp.season === yrStr
+        );
+
+        const currentHolder = tradedEntry ? tradedEntry.owner_id : originalOwner;
+
+        if (currentHolder === rosterId) {
+          const isOwn = originalOwner === rosterId;
+          const origOwnerUser = userMap[allRosters.find(r2 => r2.roster_id === originalOwner)?.owner_id];
+
+          picks.push({
+            type:           'pick',
+            id:             `pick-${yrStr}-${round}-from-${originalOwner}`,
+            label:          `${yrStr} Round ${round}`,
+            year:           yr,
+            round,
+            slot:           'mid',
+            value:          PICK_BASE[yrStr]?.[round]?.mid || 1000,
+            original_owner: isOwn ? null : (origOwnerUser?.display_name || `Team ${originalOwner}`),
+            roster_id:      rosterId,
+          });
+        }
+      });
+    });
+  });
+
+  // Remove duplicates
+  const seen = new Set();
+  return picks.filter(p => {
+    if (seen.has(p.id)) return false;
+    seen.add(p.id);
+    return true;
+  });
+}
+
+// ── Small UI components ───────────────────────────────────────────────────────
 function PosTag({ pos }) {
   const c = POS_COLORS[pos] || { bg:'rgba(156,163,175,0.15)', text:'#D1D5DB' };
-  return <span style={{ display:'inline-block', padding:'1px 6px', borderRadius:4, fontSize:'0.65rem', fontWeight:700, background:c.bg, color:c.text, flexShrink:0 }}>{pos}</span>;
+  return (
+    <span style={{ display:'inline-block', padding:'1px 5px', borderRadius:3, fontSize:'0.65rem', fontWeight:700, background:c.bg, color:c.text, flexShrink:0 }}>
+      {pos}
+    </span>
+  );
 }
 
-function PlayerCard({ player, format, valMap, action, actionLabel, actionColor, dimmed }) {
-  const val = adjVal(player, format, valMap);
+function ItemCard({ item, format, valMap, onAction, actionLabel, actionColor, dimmed }) {
+  const val = adjVal(item, format, valMap);
+  const isPlayer = item.type !== 'pick';
   return (
-    <div style={{ display:'flex', alignItems:'center', gap:8, padding:'0.5rem 0.75rem', background: dimmed ? 'transparent' : 'var(--bg-secondary)', border:`0.5px solid ${dimmed ? 'var(--border-subtle)' : 'var(--border-default)'}`, borderRadius:'var(--radius-md)', opacity: dimmed ? 0.4 : 1 }}>
-      <PosTag pos={player.position} />
+    <div style={{ display:'flex', alignItems:'center', gap:7, padding:'0.5rem 0.75rem', background: dimmed ? 'rgba(0,0,0,0.2)' : 'var(--bg-secondary)', border:`0.5px solid ${dimmed ? 'var(--border-subtle)' : 'var(--border-default)'}`, borderRadius:'var(--radius-md)', opacity: dimmed ? 0.45 : 1, transition:'opacity .1s' }}>
+      {isPlayer ? <PosTag pos={item.position} /> : <span style={{ fontSize:'0.85rem' }}>🎟</span>}
       <div style={{ flex:1, minWidth:0 }}>
-        <div style={{ fontSize:'0.875rem', fontWeight:500, color:'var(--text-primary)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{player.full_name || player.name}</div>
-        <div style={{ fontSize:'0.7rem', color:'var(--text-muted)' }}>{player.team || player.nfl_team}{player.age ? ` · ${player.age}` : ''}</div>
+        <div style={{ fontSize:'0.875rem', fontWeight:500, color:'var(--text-primary)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+          {item.full_name || item.label || item.name}
+        </div>
+        {isPlayer && (
+          <div style={{ fontSize:'0.7rem', color:'var(--text-muted)' }}>
+            {item.team}{item.age ? ` · ${item.age}` : ''}
+          </div>
+        )}
+        {!isPlayer && item.original_owner && (
+          <div style={{ fontSize:'0.7rem', color:'var(--text-muted)' }}>via {item.original_owner}</div>
+        )}
       </div>
-      <span style={{ fontSize:'0.8125rem', fontWeight:600, color:'var(--text-secondary)', flexShrink:0 }}>{fv(val)}</span>
-      {action && (
-        <button onMouseDown={action} style={{ padding:'2px 8px', borderRadius:4, border:`0.5px solid ${actionColor || 'var(--border-default)'}`, background:'transparent', color: actionColor || 'var(--text-muted)', fontSize:'0.75rem', cursor:'pointer', fontFamily:'var(--font-body)', flexShrink:0 }}>
+      <span style={{ fontSize:'0.8125rem', fontWeight:600, color: val > 2000 ? 'var(--gold-400)' : 'var(--text-secondary)', flexShrink:0 }}>{fv(val)}</span>
+      {onAction && (
+        <button
+          onMouseDown={e => { e.preventDefault(); onAction(); }}
+          style={{ padding:'2px 7px', borderRadius:4, border:`0.5px solid ${actionColor || 'var(--border-default)'}`, background:'transparent', color: actionColor || 'var(--text-muted)', fontSize:'0.75rem', cursor:'pointer', fontFamily:'var(--font-body)', flexShrink:0 }}>
           {actionLabel}
         </button>
       )}
@@ -58,223 +157,160 @@ function PlayerCard({ player, format, valMap, action, actionLabel, actionColor, 
   );
 }
 
-function PickCard({ pick, action, actionLabel, actionColor }) {
-  return (
-    <div style={{ display:'flex', alignItems:'center', gap:8, padding:'0.5rem 0.75rem', background:'var(--bg-secondary)', border:'0.5px solid var(--border-default)', borderRadius:'var(--radius-md)' }}>
-      <span style={{ fontSize:'0.9rem' }}>🎟</span>
-      <div style={{ flex:1 }}>
-        <div style={{ fontSize:'0.875rem', fontWeight:500, color:'var(--text-primary)' }}>{pick.label}</div>
-        {pick.original_owner && <div style={{ fontSize:'0.7rem', color:'var(--text-muted)' }}>via {pick.original_owner}</div>}
-      </div>
-      <span style={{ fontSize:'0.8125rem', fontWeight:600, color:'var(--text-secondary)' }}>{fv(pick.value)}</span>
-      {action && (
-        <button onMouseDown={action} style={{ padding:'2px 8px', borderRadius:4, border:`0.5px solid ${actionColor || 'var(--border-default)'}`, background:'transparent', color: actionColor || 'var(--text-muted)', fontSize:'0.75rem', cursor:'pointer', fontFamily:'var(--font-body)' }}>
-          {actionLabel}
-        </button>
-      )}
-    </div>
-  );
-}
-
-function SectionHeader({ title, count }) {
-  return (
-    <div style={{ fontSize:'0.75rem', fontWeight:600, color:'var(--text-muted)', letterSpacing:'0.06em', textTransform:'uppercase', marginBottom:'0.5rem', display:'flex', justifyContent:'space-between' }}>
-      <span>{title}</span>
-      {count !== undefined && <span>{count}</span>}
-    </div>
-  );
-}
-
-// ── Main page ─────────────────────────────────────────────────────────────────
+// ── Main ──────────────────────────────────────────────────────────────────────
 export default function TradeCalculator() {
-  const { sleeperId, isConnected, loading:sleeperLoading } = useSleeper();
+  const { sleeperId, isConnected, loading: sleeperLoading } = useSleeper();
 
-  // Step state
-  const [step, setStep] = useState(1); // 1=league, 2=opponent, 3=build, 4=suggest
+  const [step, setStep]       = useState(1);
+  const [leagues, setLeagues] = useState([]);
+  const [league, setLeague]   = useState(null);
+  const [format, setFormat]   = useState('1qb');
 
-  // League / roster data
-  const [leagues, setLeagues]         = useState([]);
-  const [league, setLeague]           = useState(null);
-  const [format, setFormat]           = useState('1qb');
-  const [rosters, setRosters]         = useState([]); // all rosters
+  // Raw Sleeper data
+  const [rosters, setRosters]         = useState([]);
   const [userMap, setUserMap]         = useState({});
-  const [sleeperPlayers, setSlPlayers] = useState({}); // sleeper player map
   const [tradedPicks, setTradedPicks] = useState([]);
-  const [valMap, setValMap]           = useState({}); // player_id -> dynasty value
+  const slPlayerMap                   = useRef({}); // use ref so not stale in callbacks
 
-  // My roster
-  const [myRoster, setMyRoster]       = useState(null);
-  const [myPlayers, setMyPlayers]     = useState([]);
-  const [myPicks, setMyPicks]         = useState([]);
+  // Dynasty values from Supabase
+  const [valMap, setValMap] = useState({});
+
+  // My team
+  const [myRoster, setMyRoster]   = useState(null);
+  const [myPlayers, setMyPlayers] = useState([]);
+  const [myPicks, setMyPicks]     = useState([]);
 
   // Opponent
-  const [oppRoster, setOppRoster]     = useState(null);
-  const [oppPlayers, setOppPlayers]   = useState([]);
-  const [oppPicks, setOppPicks]       = useState([]);
+  const [oppRoster, setOppRoster]   = useState(null);
+  const [oppPlayers, setOppPlayers] = useState([]);
+  const [oppPicks, setOppPicks]     = useState([]);
 
   // Trade build
-  const [wantFromOpp, setWantFromOpp] = useState([]); // what I want
-  const [givingMine, setGivingMine]   = useState([]); // what I give
-  const [untouchable, setUntouchable] = useState(new Set()); // my untouchable player ids
+  const [wantFromOpp, setWant]      = useState([]);
+  const [givingMine, setGiving]     = useState([]);
+  const [untouchable, setUntouch]   = useState(new Set());
+  const [suggestion, setSuggestion] = useState(null);
 
-  // UI state
-  const [loading, setLoading]         = useState(false);
-  const [suggestion, setSuggestion]   = useState(null);
-  const [mySearch, setMySearch]       = useState('');
-  const [oppSearch, setOppSearch]     = useState('');
+  // Loading states
+  const [loadingLeague, setLoadingLeague]   = useState(false);
+  const [loadingPlayers, setLoadingPlayers] = useState(true);
 
-  // Load leagues on connect
+  // Search
+  const [mySearch, setMySearch]   = useState('');
+  const [oppSearch, setOppSearch] = useState('');
+
+  // ── Load Sleeper player map ──────────────────────────────────────────────────
+  useEffect(() => {
+    setLoadingPlayers(true);
+    const cached = sessionStorage.getItem('sleeper_players');
+    if (cached) {
+      slPlayerMap.current = JSON.parse(cached);
+      setLoadingPlayers(false);
+      return;
+    }
+    fetch('https://api.sleeper.app/v1/players/nfl')
+      .then(r => r.json())
+      .then(d => {
+        sessionStorage.setItem('sleeper_players', JSON.stringify(d));
+        slPlayerMap.current = d;
+        setLoadingPlayers(false);
+      });
+  }, []);
+
+  // ── Load leagues ──────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!sleeperId) return;
     fetch(`https://api.sleeper.app/v1/user/${sleeperId}/leagues/nfl/2026`)
       .then(r => r.json()).then(d => setLeagues(d || []));
   }, [sleeperId]);
 
-  // Load Sleeper player map (cached)
+  // ── Load dynasty values ───────────────────────────────────────────────────────
   useEffect(() => {
-    const cached = sessionStorage.getItem('sleeper_players');
-    if (cached) { setSlPlayers(JSON.parse(cached)); return; }
-    fetch('https://api.sleeper.app/v1/players/nfl')
-      .then(r => r.json())
-      .then(d => { sessionStorage.setItem('sleeper_players', JSON.stringify(d)); setSlPlayers(d); });
-  }, []);
-
-  // Load dynasty values from Supabase
-  useEffect(() => {
-    if (!format) return;
     supabase.from('v_consensus_rankings')
       .select('player_id, consensus_rank, editorial_rank')
-      .eq('format', format).limit(400)
+      .eq('format', format).limit(500)
       .then(({ data }) => {
-        if (!data?.length) return;
         const map = {};
-        data.forEach(r => {
+        (data || []).forEach(r => {
           const rank = r.consensus_rank || r.editorial_rank || 300;
-          map[r.player_id] = Math.max(100, Math.round(10000 - (rank-1) * 33));
+          map[r.player_id] = Math.max(100, Math.round(10000 - (rank - 1) * 33));
         });
         setValMap(map);
       });
   }, [format]);
 
-  // Select a league — load rosters, users, picks
+  // ── Select league ─────────────────────────────────────────────────────────────
   async function selectLeague(l) {
     setLeague(l);
-    setLoading(true);
+    setLoadingLeague(true);
     setStep(2);
     setOppRoster(null);
-    setWantFromOpp([]);
-    setGivingMine([]);
-    setUntouchable(new Set());
+    setWant([]); setGiving([]); setUntouch(new Set()); setSuggestion(null);
 
     // Detect format
     const hasSF  = l.roster_positions?.includes('SUPER_FLEX');
     const hasTEP = (l.scoring_settings?.bonus_rec_te || 0) >= 0.5;
-    setFormat(hasSF ? 'sf' : hasTEP ? 'teprem' : '1qb');
+    const fmt = hasSF ? 'sf' : hasTEP ? 'teprem' : '1qb';
+    setFormat(fmt);
 
     const [rostersRes, usersRes, picksRes] = await Promise.all([
       fetch(`https://api.sleeper.app/v1/league/${l.league_id}/rosters`),
       fetch(`https://api.sleeper.app/v1/league/${l.league_id}/users`),
       fetch(`https://api.sleeper.app/v1/league/${l.league_id}/traded_picks`),
     ]);
-    const r = await rostersRes.json();
-    const u = await usersRes.json();
-    const p = await picksRes.json();
 
-    const umap = Object.fromEntries(u.map(x => [x.user_id, x]));
+    const rList  = await rostersRes.json();
+    const uList  = await usersRes.json();
+    const pList  = await picksRes.json() || [];
+    const umap   = Object.fromEntries(uList.map(u => [u.user_id, u]));
+
+    setRosters(rList);
     setUserMap(umap);
-    setRosters(r);
-    setTradedPicks(p || []);
+    setTradedPicks(pList);
 
-    const mine = r.find(x => x.owner_id === sleeperId);
+    // Make sure player map is loaded before enriching
+    const pmap = slPlayerMap.current;
+    const mine = rList.find(r => r.owner_id === sleeperId);
     setMyRoster(mine);
+
     if (mine) {
-      setMyPlayers(enrichPlayers(mine.players || [], sleeperPlayers));
-      setMyPicks(buildPicks(mine, p || [], umap, l));
+      // Load fresh valMap for this format
+      const { data: vals } = await supabase
+        .from('v_consensus_rankings')
+        .select('player_id, consensus_rank, editorial_rank')
+        .eq('format', fmt).limit(500);
+
+      const vm = {};
+      (vals || []).forEach(r => {
+        const rank = r.consensus_rank || r.editorial_rank || 300;
+        vm[r.player_id] = Math.max(100, Math.round(10000 - (rank - 1) * 33));
+      });
+      setValMap(vm);
+
+      setMyPlayers(enrichPlayers(mine.players || [], pmap, vm));
+      setMyPicks(buildPicksForRoster(mine.roster_id, pList, rList, umap));
     }
-    setLoading(false);
+
+    setLoadingLeague(false);
   }
 
-  // Enrich sleeper player ids with full player data
-  function enrichPlayers(ids, pmap) {
-    return ids
-      .map(id => {
-        const p = pmap[id];
-        if (!p || !['QB','RB','WR','TE','K'].includes(p.position)) return null;
-        return { player_id: id, full_name: p.full_name, position: p.position, team: p.team, age: p.age };
-      })
-      .filter(Boolean)
-      .sort((a,b) => {
-        const posOrder = { QB:0,WR:1,RB:2,TE:3,K:4 };
-        return (posOrder[a.position]||9) - (posOrder[b.position]||9) ||
-               (valMap[b.player_id]||0) - (valMap[a.player_id]||0);
-      });
-  }
-
-  // Build pick list for a roster
-  function buildPicks(roster, traded, umap, l) {
-    const picks = [];
-    const currentYear = 2026;
-    const years = [currentYear, currentYear+1, currentYear+2];
-
-    years.forEach(yr => {
-      [1, 2].forEach(round => {
-        // Check if this team has this pick (could be traded away / received)
-        const sentAway = traded.find(tp =>
-          tp.previous_owner_id === roster.roster_id &&
-          tp.season === String(yr) && tp.round === round
-        );
-        const received = traded.find(tp =>
-          tp.owner_id === roster.roster_id &&
-          tp.season === String(yr) && tp.round === round
-        );
-
-        // Own pick if not sent away
-        if (!sentAway) {
-          picks.push({
-            id: `${roster.roster_id}-${yr}-${round}-own`,
-            label: `${yr} Round ${round}`,
-            year: yr, round,
-            slot: 'mid',
-            value: PICK_BASE[yr]?.[round]?.mid || 1000,
-            roster_id: roster.roster_id,
-          });
-        }
-        // Received picks
-        if (received && received.previous_owner_id !== roster.roster_id) {
-          const origOwner = umap[rosters.find(r => r.roster_id === received.previous_owner_id)?.owner_id]?.display_name || 'Unknown';
-          picks.push({
-            id: `${roster.roster_id}-${yr}-${round}-recv-${received.previous_owner_id}`,
-            label: `${yr} Round ${round}`,
-            year: yr, round,
-            slot: 'mid',
-            value: PICK_BASE[yr]?.[round]?.mid || 1000,
-            original_owner: origOwner,
-            roster_id: roster.roster_id,
-          });
-        }
-      });
-    });
-
-    return picks;
-  }
-
-  // Select opponent team
+  // ── Select opponent ───────────────────────────────────────────────────────────
   function selectOpponent(roster) {
     setOppRoster(roster);
-    setOppPlayers(enrichPlayers(roster.players || [], sleeperPlayers));
-    setOppPicks(buildPicks(roster, tradedPicks, userMap, league));
-    setWantFromOpp([]);
-    setGivingMine([]);
+    const pmap = slPlayerMap.current;
+    setOppPlayers(enrichPlayers(roster.players || [], pmap, valMap));
+    setOppPicks(buildPicksForRoster(roster.roster_id, tradedPicks, rosters, userMap));
+    setWant([]); setGiving([]); setSuggestion(null);
     setStep(3);
   }
 
-  // Trade build helpers
-  const wantIds     = new Set(wantFromOpp.map(p => p.player_id || p.id));
-  const givingIds   = new Set(givingMine.map(p => p.player_id || p.id));
+  // ── Trade helpers ─────────────────────────────────────────────────────────────
+  const wantIds   = new Set(wantFromOpp.map(p => p.player_id || p.id));
+  const givingIds = new Set(givingMine.map(p => p.player_id || p.id));
 
   function toggleWant(item) {
     const id = item.player_id || item.id;
-    setWantFromOpp(prev => prev.find(p => (p.player_id||p.id) === id)
+    setWant(prev => prev.find(p => (p.player_id||p.id) === id)
       ? prev.filter(p => (p.player_id||p.id) !== id)
       : [...prev, item]);
   }
@@ -282,92 +318,93 @@ export default function TradeCalculator() {
   function toggleGive(item) {
     const id = item.player_id || item.id;
     if (untouchable.has(id)) return;
-    setGivingMine(prev => prev.find(p => (p.player_id||p.id) === id)
+    setGiving(prev => prev.find(p => (p.player_id||p.id) === id)
       ? prev.filter(p => (p.player_id||p.id) !== id)
       : [...prev, item]);
   }
 
   function toggleUntouchable(id) {
-    setUntouchable(prev => {
+    setUntouch(prev => {
       const n = new Set(prev);
       n.has(id) ? n.delete(id) : n.add(id);
       return n;
     });
-    // Remove from giving if marked untouchable
-    setGivingMine(prev => prev.filter(p => (p.player_id||p.id) !== id));
+    setGiving(prev => prev.filter(p => (p.player_id||p.id) !== id));
   }
 
-  // Calculate totals
+  // Totals
   function total(items) {
-    return items.reduce((s, p) => s + adjVal(p, format, valMap), 0);
+    return items.reduce((s, item) => s + adjVal(item, format, valMap), 0);
   }
 
   const wantTotal  = total(wantFromOpp);
   const giveTotal  = total(givingMine);
   const diff       = wantTotal - giveTotal;
-  const pct        = Math.max(wantTotal, giveTotal) > 0
-    ? Math.round((Math.abs(diff) / Math.max(wantTotal, giveTotal)) * 100) : 0;
+  const maxTotal   = Math.max(wantTotal, giveTotal);
+  const pct        = maxTotal > 0 ? Math.round((Math.abs(diff) / maxTotal) * 100) : 0;
 
   function getVerdict() {
     if (!wantFromOpp.length && !givingMine.length) return null;
-    if (pct <= 5)  return { label:'◆ FAIR',        cls:'verdict-hold', msg:'Roughly even. Accept or decline based on roster fit.' };
+    if (pct <= 5)  return { label:'◆ FAIR',        cls:'verdict-hold', msg:'Roughly even. Accept or decline based on roster fit.'        };
     if (diff > 0)  return pct >= 20
-      ? { label:'▲ STRONG BUY', cls:'verdict-buy',  msg:`You're winning by ${pct}%. Pull the trigger.` }
-      : { label:'▲ BUY',        cls:'verdict-buy',  msg:'Slight advantage to you. Reasonable to accept.' };
+      ? { label:'▲ STRONG BUY', cls:'verdict-buy',  msg:`You're winning this trade by ${pct}%. Pull the trigger.`          }
+      : { label:'▲ BUY',        cls:'verdict-buy',  msg:'Slight advantage to you. Reasonable to accept.'                   };
     return pct >= 20
-      ? { label:'▼ STRONG SELL',cls:'verdict-sell', msg:`You're losing by ${pct}%. Counter or walk away.` }
-      : { label:'▼ SELL',       cls:'verdict-sell', msg:'You\'re giving up slightly more. Counter if possible.' };
+      ? { label:'▼ STRONG SELL',cls:'verdict-sell', msg:`You're losing by ${pct}%. Counter or walk away.`                  }
+      : { label:'▼ SELL',       cls:'verdict-sell', msg:"You're giving up slightly more. Try countering."                   };
   }
 
-  // Generate trade suggestion
+  // ── Trade suggester ───────────────────────────────────────────────────────────
   function suggestTrade() {
-    if (!wantFromOpp.length) { alert('Select at least one player/pick you want from the opponent.'); return; }
+    if (!wantFromOpp.length) {
+      alert('Select at least one player or pick you want from your opponent.');
+      return;
+    }
 
     const target  = wantTotal;
-    const budget  = target * 1.05; // can overpay by 5%
-    const floor   = target * 0.85; // minimum value to offer
+    const ceiling = target * 1.08;
+    const floor   = target * 0.82;
 
-    // Available assets (not untouchable, not already in give)
-    const available = [
+    // Available assets (not untouchable, not already selected to give)
+    const pool = [
       ...myPlayers.filter(p => !untouchable.has(p.player_id) && !givingIds.has(p.player_id)),
-      ...myPicks.filter(p => !givingIds.has(p.id)),
-    ].sort((a,b) => adjVal(b, format, valMap) - adjVal(a, format, valMap));
+      ...myPicks.filter(p  => !untouchable.has(p.id)         && !givingIds.has(p.id)),
+    ].sort((a, b) => adjVal(b, format, valMap) - adjVal(a, format, valMap));
 
-    // Try to find a combo within range
     let best = null;
     let bestDiff = Infinity;
 
-    // 1-asset trades
-    for (const a of available) {
+    // 1-asset
+    for (const a of pool) {
       const v = adjVal(a, format, valMap);
-      if (v >= floor && v <= budget) {
+      if (v >= floor && v <= ceiling) {
         const d = Math.abs(v - target);
         if (d < bestDiff) { bestDiff = d; best = [a]; }
       }
     }
 
-    // 2-asset trades if no 1-asset found
-    if (!best) {
-      for (let i = 0; i < available.length; i++) {
-        for (let j = i+1; j < available.length; j++) {
-          const v = adjVal(available[i], format, valMap) + adjVal(available[j], format, valMap);
-          if (v >= floor && v <= budget) {
+    // 2-asset
+    if (!best || bestDiff > target * 0.1) {
+      for (let i = 0; i < Math.min(pool.length, 20); i++) {
+        for (let j = i + 1; j < Math.min(pool.length, 20); j++) {
+          const v = adjVal(pool[i], format, valMap) + adjVal(pool[j], format, valMap);
+          if (v >= floor && v <= ceiling) {
             const d = Math.abs(v - target);
-            if (d < bestDiff) { bestDiff = d; best = [available[i], available[j]]; }
+            if (d < bestDiff) { bestDiff = d; best = [pool[i], pool[j]]; }
           }
         }
       }
     }
 
-    // 3-asset trades
-    if (!best) {
-      for (let i = 0; i < available.length; i++) {
-        for (let j = i+1; j < available.length; j++) {
-          for (let k = j+1; k < available.length; k++) {
-            const v = [available[i],available[j],available[k]].reduce((s,a) => s + adjVal(a, format, valMap), 0);
-            if (v >= floor && v <= budget) {
+    // 3-asset
+    if (!best || bestDiff > target * 0.15) {
+      for (let i = 0; i < Math.min(pool.length, 15); i++) {
+        for (let j = i + 1; j < Math.min(pool.length, 15); j++) {
+          for (let k = j + 1; k < Math.min(pool.length, 15); k++) {
+            const v = adjVal(pool[i], format, valMap) + adjVal(pool[j], format, valMap) + adjVal(pool[k], format, valMap);
+            if (v >= floor && v <= ceiling) {
               const d = Math.abs(v - target);
-              if (d < bestDiff) { bestDiff = d; best = [available[i],available[j],available[k]]; }
+              if (d < bestDiff) { bestDiff = d; best = [pool[i], pool[j], pool[k]]; }
             }
           }
         }
@@ -376,32 +413,25 @@ export default function TradeCalculator() {
 
     if (best) {
       setSuggestion(best);
-      setGivingMine(best);
+      setGiving(best);
       setStep(4);
     } else {
-      setSuggestion(null);
-      alert(`No combination of your available assets matches the value of what you want (${fv(target)}). You may need to include more players or accept a slightly uneven trade.`);
+      alert(`No combination of your available assets closely matches the value (${fv(target)}) of what you want. You may need to add more to the offer or reconsider what you're targeting.`);
     }
   }
 
-  // Filtered player lists for search
-  const myFiltered  = mySearch
-    ? myPlayers.filter(p => (p.full_name||'').toLowerCase().includes(mySearch.toLowerCase()))
-    : myPlayers;
-  const oppFiltered = oppSearch
-    ? oppPlayers.filter(p => (p.full_name||'').toLowerCase().includes(oppSearch.toLowerCase()))
-    : oppPlayers;
+  // Filtered lists
+  const myFiltered  = mySearch  ? myPlayers.filter(p  => (p.full_name||'').toLowerCase().includes(mySearch.toLowerCase()))  : myPlayers;
+  const oppFiltered = oppSearch ? oppPlayers.filter(p => (p.full_name||'').toLowerCase().includes(oppSearch.toLowerCase())) : oppPlayers;
 
   const myTeamName  = userMap[myRoster?.owner_id]?.display_name  || 'My team';
   const oppTeamName = userMap[oppRoster?.owner_id]?.display_name || 'Opponent';
   const verdict     = getVerdict();
 
-  // ── RENDER ──────────────────────────────────────────────────────────────────
+  // ── Render ────────────────────────────────────────────────────────────────────
   return (
     <>
-      <Head>
-        <title>Trade Calculator — DynastyJudge</title>
-      </Head>
+      <Head><title>Trade Calculator — DynastyJudge</title></Head>
       <Nav />
 
       <main style={{ minHeight:'100vh', paddingBottom:'4rem' }}>
@@ -415,7 +445,7 @@ export default function TradeCalculator() {
             </div>
             <h1 className="display-md" style={{ marginBottom:8 }}>Trade calculator</h1>
             <p className="body-md" style={{ color:'var(--text-secondary)', maxWidth:520 }}>
-              Select a Sleeper league, pick your trade partner, choose what you want — and the Judge suggests what to offer.
+              Select a league, pick your trade partner, choose what you want — and the Judge suggests a fair offer from your roster.
             </p>
           </div>
         </div>
@@ -430,17 +460,19 @@ export default function TradeCalculator() {
             </div>
           )}
 
+          {/* Player map loading notice */}
+          {isConnected && loadingPlayers && (
+            <div style={{ padding:'0.75rem 1rem', background:'var(--bg-secondary)', border:'0.5px solid var(--border-subtle)', borderRadius:'var(--radius-md)', marginBottom:'1rem', fontSize:'0.8125rem', color:'var(--text-muted)' }}>
+              Loading player database... (first load only, then cached)
+            </div>
+          )}
+
           {/* Step progress */}
           {isConnected && (
             <div style={{ display:'flex', gap:0, marginBottom:'1.5rem', borderBottom:'0.5px solid var(--border-subtle)', paddingBottom:'1rem', overflowX:'auto' }}>
-              {[
-                [1,'Select league'],
-                [2,'Select opponent'],
-                [3,'Build trade'],
-                [4,'Suggestion'],
-              ].map(([n, label]) => (
-                <div key={n} style={{ display:'flex', alignItems:'center', gap:6, marginRight:20, cursor: n < step ? 'pointer' : 'default', flexShrink:0 }}
-                  onClick={() => n < step && setStep(n)}>
+              {[[1,'Select league'],[2,'Select opponent'],[3,'Build trade'],[4,'Suggestion']].map(([n, label]) => (
+                <div key={n} onClick={() => n < step && setStep(n)}
+                  style={{ display:'flex', alignItems:'center', gap:6, marginRight:20, cursor: n < step ? 'pointer' : 'default', flexShrink:0 }}>
                   <div style={{ width:24, height:24, borderRadius:'50%', display:'flex', alignItems:'center', justifyContent:'center', fontSize:'0.75rem', fontWeight:700, background: step >= n ? 'var(--gold-500)' : 'var(--bg-secondary)', color: step >= n ? 'var(--charcoal-900)' : 'var(--text-muted)', border:`0.5px solid ${step >= n ? 'var(--gold-500)' : 'var(--border-default)'}` }}>
                     {step > n ? '✓' : n}
                   </div>
@@ -453,11 +485,14 @@ export default function TradeCalculator() {
           {/* ── STEP 1: Select league ── */}
           {isConnected && step === 1 && (
             <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
-              {leagues.length === 0 && <div style={{ color:'var(--text-muted)', textAlign:'center', padding:'2rem' }}>No active leagues found.</div>}
+              {leagues.length === 0 && !sleeperLoading && (
+                <div style={{ textAlign:'center', padding:'3rem', color:'var(--text-muted)' }}>No active leagues found for 2026.</div>
+              )}
               {leagues.map(l => (
-                <button key={l.league_id} onClick={() => selectLeague(l)}
-                  style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'1rem 1.25rem', background:'var(--bg-secondary)', border:'0.5px solid var(--border-subtle)', borderRadius:'var(--radius-lg)', cursor:'pointer', fontFamily:'var(--font-body)', textAlign:'left', transition:'border-color .12s' }}
-                  onMouseEnter={e => e.currentTarget.style.borderColor='var(--border-gold)'}
+                <button key={l.league_id} onClick={() => !loadingPlayers && selectLeague(l)}
+                  disabled={loadingPlayers}
+                  style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'1rem 1.25rem', background:'var(--bg-secondary)', border:'0.5px solid var(--border-subtle)', borderRadius:'var(--radius-lg)', cursor: loadingPlayers ? 'not-allowed' : 'pointer', fontFamily:'var(--font-body)', textAlign:'left', opacity: loadingPlayers ? 0.6 : 1, transition:'border-color .12s' }}
+                  onMouseEnter={e => { if (!loadingPlayers) e.currentTarget.style.borderColor='var(--border-gold)'; }}
                   onMouseLeave={e => e.currentTarget.style.borderColor='var(--border-subtle)'}
                 >
                   <div>
@@ -468,7 +503,9 @@ export default function TradeCalculator() {
                       {l.scoring_settings?.rec === 1 ? 'PPR' : l.scoring_settings?.rec === 0.5 ? 'Half PPR' : 'Standard'}
                     </div>
                   </div>
-                  <span style={{ color:'var(--gold-400)', fontSize:'0.875rem' }}>Select →</span>
+                  <span style={{ color:'var(--gold-400)', fontSize:'0.875rem' }}>
+                    {loadingPlayers ? 'Loading players...' : 'Select →'}
+                  </span>
                 </button>
               ))}
             </div>
@@ -477,53 +514,58 @@ export default function TradeCalculator() {
           {/* ── STEP 2: Select opponent ── */}
           {isConnected && step === 2 && (
             <div>
-              {loading && <div style={{ textAlign:'center', padding:'2rem', color:'var(--text-muted)' }}>Loading rosters...</div>}
-              {!loading && (
+              {loadingLeague && <div style={{ textAlign:'center', padding:'2rem', color:'var(--text-muted)' }}>Loading rosters...</div>}
+              {!loadingLeague && (
                 <>
                   <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:'1rem' }}>
                     <h2 style={{ fontSize:'1rem', fontWeight:600, color:'var(--text-primary)' }}>Select your trade partner</h2>
-                    <span style={{ fontSize:'0.8125rem', color:'var(--text-muted)' }}>{league?.name}</span>
+                    <div style={{ display:'flex', gap:12, alignItems:'center' }}>
+                      <span style={{ fontSize:'0.8125rem', color:'var(--text-muted)' }}>{league?.name}</span>
+                      <button onClick={() => setStep(1)} style={{ fontSize:'0.8125rem', color:'var(--text-muted)', background:'none', border:'none', cursor:'pointer', fontFamily:'var(--font-body)' }}>← Back</button>
+                    </div>
                   </div>
-                  <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
-                    {rosters
-                      .filter(r => r.owner_id !== sleeperId)
-                      .map(r => {
-                        const user = userMap[r.owner_id] || {};
-                        const topPlayers = (r.players || [])
-                          .map(id => sleeperPlayers[id])
-                          .filter(p => p && ['QB','WR','RB','TE'].includes(p.position))
-                          .sort((a,b) => (valMap[Object.keys(sleeperPlayers).find(k => sleeperPlayers[k]===b)]||0) - (valMap[Object.keys(sleeperPlayers).find(k => sleeperPlayers[k]===a)]||0))
-                          .slice(0, 3);
 
-                        return (
-                          <button key={r.roster_id} onClick={() => selectOpponent(r)}
-                            style={{ display:'flex', alignItems:'center', gap:'1rem', padding:'1rem 1.25rem', background:'var(--bg-secondary)', border:'0.5px solid var(--border-subtle)', borderRadius:'var(--radius-lg)', cursor:'pointer', fontFamily:'var(--font-body)', textAlign:'left', transition:'border-color .12s' }}
-                            onMouseEnter={e => e.currentTarget.style.borderColor='var(--border-gold)'}
-                            onMouseLeave={e => e.currentTarget.style.borderColor='var(--border-subtle)'}
-                          >
-                            {/* Avatar */}
-                            <div style={{ width:40, height:40, borderRadius:'50%', background:'var(--bg-tertiary)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:'1rem', fontWeight:700, color:'var(--text-muted)', flexShrink:0 }}>
-                              {(user.display_name || '?')[0].toUpperCase()}
+                  {/* My team info */}
+                  {myRoster && (
+                    <div style={{ padding:'0.875rem 1rem', background:'rgba(200,151,58,0.06)', border:'0.5px solid var(--border-gold)', borderRadius:'var(--radius-md)', marginBottom:'1rem', fontSize:'0.8125rem', color:'var(--text-secondary)' }}>
+                      <strong style={{ color:'var(--text-primary)' }}>Your roster:</strong> {myPlayers.length} players · {myPicks.length} picks loaded
+                    </div>
+                  )}
+
+                  <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+                    {rosters.filter(r => r.owner_id !== sleeperId).map(r => {
+                      const user      = userMap[r.owner_id] || {};
+                      const pmap      = slPlayerMap.current;
+                      const topPlayers = (r.players || [])
+                        .map(id => ({ id, p: pmap[id] }))
+                        .filter(({ p }) => p && ['WR','RB','QB','TE'].includes(p.position))
+                        .sort((a, b) => (valMap[b.id]||0) - (valMap[a.id]||0))
+                        .slice(0, 4);
+
+                      return (
+                        <button key={r.roster_id} onClick={() => selectOpponent(r)}
+                          style={{ display:'flex', alignItems:'center', gap:'1rem', padding:'1rem 1.25rem', background:'var(--bg-secondary)', border:'0.5px solid var(--border-subtle)', borderRadius:'var(--radius-lg)', cursor:'pointer', fontFamily:'var(--font-body)', textAlign:'left', transition:'border-color .12s' }}
+                          onMouseEnter={e => e.currentTarget.style.borderColor='var(--border-gold)'}
+                          onMouseLeave={e => e.currentTarget.style.borderColor='var(--border-subtle)'}
+                        >
+                          <div style={{ width:40, height:40, borderRadius:'50%', background:'var(--bg-tertiary)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:'1rem', fontWeight:700, color:'var(--text-muted)', flexShrink:0 }}>
+                            {(user.display_name || '?')[0].toUpperCase()}
+                          </div>
+                          <div style={{ flex:1, minWidth:0 }}>
+                            <div style={{ fontSize:'0.9375rem', fontWeight:600, color:'var(--text-primary)', marginBottom:4 }}>
+                              {user.display_name || 'Unknown'}
                             </div>
-                            <div style={{ flex:1, minWidth:0 }}>
-                              <div style={{ fontSize:'0.9375rem', fontWeight:600, color:'var(--text-primary)', marginBottom:4 }}>
-                                {user.display_name || 'Unknown'}
-                              </div>
-                              <div style={{ display:'flex', gap:4, flexWrap:'wrap' }}>
-                                {topPlayers.map((p,i) => (
-                                  <span key={i} style={{ fontSize:'0.75rem', color:'var(--text-muted)' }}>
-                                    {p.full_name?.split(' ').slice(-1)[0]}{i < topPlayers.length-1 ? ',' : ''}
-                                  </span>
-                                ))}
-                              </div>
+                            <div style={{ fontSize:'0.75rem', color:'var(--text-muted)', display:'flex', gap:8, flexWrap:'wrap' }}>
+                              {topPlayers.map(({ id, p }) => (
+                                <span key={id}>{p.full_name?.split(' ').pop()}</span>
+                              ))}
+                              {r.players?.length > 4 && <span>+{r.players.length - 4} more</span>}
                             </div>
-                            <div style={{ textAlign:'right', flexShrink:0 }}>
-                              <div style={{ fontSize:'0.75rem', color:'var(--text-muted)' }}>{r.players?.length || 0} players</div>
-                              <div style={{ fontSize:'0.875rem', color:'var(--gold-400)', marginTop:2 }}>Trade →</div>
-                            </div>
-                          </button>
-                        );
-                      })}
+                          </div>
+                          <span style={{ color:'var(--gold-400)', fontSize:'0.875rem', flexShrink:0 }}>Trade →</span>
+                        </button>
+                      );
+                    })}
                   </div>
                 </>
               )}
@@ -533,35 +575,39 @@ export default function TradeCalculator() {
           {/* ── STEP 3 & 4: Build trade ── */}
           {isConnected && (step === 3 || step === 4) && myRoster && oppRoster && (
             <div>
-              {/* Format badge */}
-              <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:'1.25rem' }}>
+
+              {/* Header bar */}
+              <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:'1rem', flexWrap:'wrap' }}>
                 <span style={{ fontSize:'0.8125rem', padding:'3px 10px', borderRadius:99, background:'rgba(200,151,58,0.12)', color:'var(--gold-400)', border:'0.5px solid var(--border-gold)', fontWeight:600 }}>
                   {format === 'sf' ? 'SuperFlex' : format === 'teprem' ? 'TE Premium' : '1QB'}
                 </span>
                 <span style={{ fontSize:'0.8125rem', color:'var(--text-muted)' }}>{league?.name}</span>
-                <button onClick={() => setStep(2)} style={{ fontSize:'0.8125rem', color:'var(--text-muted)', background:'none', border:'none', cursor:'pointer', fontFamily:'var(--font-body)', marginLeft:'auto' }}>← Change opponent</button>
+                <button onClick={() => setStep(2)} style={{ fontSize:'0.8125rem', color:'var(--text-muted)', background:'none', border:'none', cursor:'pointer', fontFamily:'var(--font-body)', marginLeft:'auto' }}>
+                  ← Change opponent
+                </button>
               </div>
 
-              {/* Trade summary bar */}
+              {/* Trade summary */}
               {(wantFromOpp.length > 0 || givingMine.length > 0) && (
-                <div style={{ background:'var(--bg-secondary)', border:'0.5px solid var(--border-default)', borderRadius:'var(--radius-lg)', padding:'1rem 1.25rem', marginBottom:'1.25rem', display:'grid', gridTemplateColumns:'1fr auto 1fr', gap:'0.75rem', alignItems:'center' }}>
+                <div style={{ background:'var(--bg-secondary)', border:'0.5px solid var(--border-default)', borderRadius:'var(--radius-lg)', padding:'1rem 1.25rem', marginBottom:'1rem', display:'grid', gridTemplateColumns:'1fr auto 1fr', gap:'0.75rem', alignItems:'center' }}>
                   <div>
-                    <div style={{ fontSize:'0.7rem', color:'var(--text-muted)', marginBottom:4, textTransform:'uppercase', letterSpacing:'0.06em' }}>You give</div>
+                    <div style={{ fontSize:'0.7rem', color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:4 }}>You give</div>
                     <div style={{ fontSize:'1.25rem', fontWeight:700, color:'#F87171' }}>{fv(giveTotal)}</div>
                     <div style={{ fontSize:'0.75rem', color:'var(--text-muted)' }}>{givingMine.length} asset{givingMine.length !== 1 ? 's' : ''}</div>
                   </div>
                   <div style={{ textAlign:'center' }}>
-                    {verdict ? (
-                      <>
-                        <span className={`verdict ${verdict.cls}`} style={{ fontSize:'0.75rem', padding:'4px 10px' }}>{verdict.label}</span>
-                        <div style={{ fontSize:'0.75rem', color:'var(--text-muted)', marginTop:4 }}>
-                          {diff > 0 ? '+' : ''}{fv(Math.abs(diff))} {diff >= 0 ? 'your way' : 'against you'}
-                        </div>
-                      </>
-                    ) : <span style={{ fontSize:'1.5rem', color:'var(--text-muted)' }}>⇄</span>}
+                    {verdict
+                      ? <>
+                          <span className={`verdict ${verdict.cls}`} style={{ fontSize:'0.75rem', padding:'4px 10px' }}>{verdict.label}</span>
+                          <div style={{ fontSize:'0.75rem', color:'var(--text-muted)', marginTop:4 }}>
+                            {diff > 0 ? '+' : ''}{fv(Math.abs(diff))} {diff >= 0 ? 'your way' : 'against you'}
+                          </div>
+                        </>
+                      : <span style={{ fontSize:'1.5rem', color:'var(--text-muted)' }}>⇄</span>
+                    }
                   </div>
                   <div style={{ textAlign:'right' }}>
-                    <div style={{ fontSize:'0.7rem', color:'var(--text-muted)', marginBottom:4, textTransform:'uppercase', letterSpacing:'0.06em' }}>You receive</div>
+                    <div style={{ fontSize:'0.7rem', color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:4 }}>You receive</div>
                     <div style={{ fontSize:'1.25rem', fontWeight:700, color:'#4ADE80' }}>{fv(wantTotal)}</div>
                     <div style={{ fontSize:'0.75rem', color:'var(--text-muted)' }}>{wantFromOpp.length} asset{wantFromOpp.length !== 1 ? 's' : ''}</div>
                   </div>
@@ -570,132 +616,136 @@ export default function TradeCalculator() {
 
               {/* Verdict message */}
               {verdict && (
-                <div style={{ padding:'0.875rem 1rem', background:'var(--bg-secondary)', border:`0.5px solid var(--border-default)`, borderLeft:`4px solid ${verdict.cls === 'verdict-buy' ? '#4ADE80' : verdict.cls === 'verdict-sell' ? '#F87171' : 'var(--gold-400)'}`, borderRadius:'0 var(--radius-md) var(--radius-md) 0', marginBottom:'1.25rem', fontSize:'0.875rem', color:'var(--text-secondary)' }}>
+                <div style={{ padding:'0.75rem 1rem', background:'var(--bg-secondary)', borderLeft:`4px solid ${verdict.cls === 'verdict-buy' ? '#4ADE80' : verdict.cls === 'verdict-sell' ? '#F87171' : 'var(--gold-400)'}`, borderRadius:'0 var(--radius-md) var(--radius-md) 0', marginBottom:'1rem', fontSize:'0.875rem', color:'var(--text-secondary)' }}>
                   {verdict.msg}
+                </div>
+              )}
+
+              {/* Suggestion callout */}
+              {step === 4 && suggestion && (
+                <div style={{ background:'rgba(200,151,58,0.06)', border:'0.5px solid var(--border-gold)', borderRadius:'var(--radius-lg)', padding:'1.25rem', marginBottom:'1.25rem' }}>
+                  <div style={{ fontSize:'0.8125rem', fontWeight:600, color:'var(--gold-400)', letterSpacing:'0.06em', textTransform:'uppercase', marginBottom:'0.75rem' }}>
+                    ⚖ The Judge suggests offering:
+                  </div>
+                  <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+                    {suggestion.map((item, i) => <ItemCard key={i} item={item} format={format} valMap={valMap} />)}
+                  </div>
+                  <div style={{ fontSize:'0.8125rem', color:'var(--text-muted)', marginTop:'0.75rem' }}>
+                    Combined: {fv(total(suggestion))} vs. {fv(wantTotal)} requested · {pct}% {diff >= 0 ? 'in your favor' : 'against you'}
+                  </div>
                 </div>
               )}
 
               {/* Suggest button */}
               {wantFromOpp.length > 0 && (
                 <button onClick={suggestTrade}
-                  style={{ width:'100%', padding:'0.875rem', borderRadius:'var(--radius-md)', background:'var(--gold-500)', color:'var(--charcoal-900)', border:'none', fontSize:'0.9375rem', fontWeight:700, cursor:'pointer', fontFamily:'var(--font-body)', marginBottom:'1.5rem', display:'flex', alignItems:'center', justifyContent:'center', gap:8 }}>
-                  ⚖ Suggest what to offer for {wantFromOpp.length} selected asset{wantFromOpp.length !== 1 ? 's' : ''}
+                  style={{ width:'100%', padding:'0.875rem', borderRadius:'var(--radius-md)', background:'var(--gold-500)', color:'var(--charcoal-900)', border:'none', fontSize:'0.9375rem', fontWeight:700, cursor:'pointer', fontFamily:'var(--font-body)', marginBottom:'1.25rem' }}>
+                  ⚖ Suggest what to offer for {wantFromOpp.length} selected asset{wantFromOpp.length !== 1 ? 's' : ''} ({fv(wantTotal)})
                 </button>
               )}
 
-              {/* Suggestion result */}
-              {step === 4 && suggestion && (
-                <div style={{ background:'rgba(200,151,58,0.06)', border:'0.5px solid var(--border-gold)', borderRadius:'var(--radius-lg)', padding:'1.25rem', marginBottom:'1.5rem' }}>
-                  <div style={{ fontSize:'0.8125rem', fontWeight:600, color:'var(--gold-400)', letterSpacing:'0.06em', textTransform:'uppercase', marginBottom:'0.75rem' }}>
-                    ⚖ The Judge suggests offering:
-                  </div>
-                  <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
-                    {suggestion.map((asset, i) => (
-                      asset.player_id
-                        ? <PlayerCard key={i} player={asset} format={format} valMap={valMap} />
-                        : <PickCard key={i} pick={asset} />
-                    ))}
-                  </div>
-                  <div style={{ fontSize:'0.8125rem', color:'var(--text-muted)', marginTop:'0.75rem' }}>
-                    Combined value: {fv(total(suggestion))} vs. {fv(wantTotal)} requested — {pct}% {diff >= 0 ? 'in your favor' : 'against you'}
-                  </div>
-                </div>
-              )}
-
-              {/* Three column layout: opponent | untouchable | give */}
+              {/* Three columns */}
               <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:'1rem' }}>
 
-                {/* COL 1: Opponent roster — want from them */}
+                {/* COL 1: Opponent — select what you want */}
                 <div>
-                  <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:'0.5rem' }}>
-                    <SectionHeader title={oppTeamName} count={oppPlayers.length} />
-                    {wantFromOpp.length > 0 && <span style={{ fontSize:'0.75rem', color:'#4ADE80', fontWeight:600 }}>{wantFromOpp.length} selected</span>}
+                  <div style={{ fontSize:'0.75rem', fontWeight:600, color:'var(--text-muted)', letterSpacing:'0.06em', textTransform:'uppercase', marginBottom:'0.5rem', display:'flex', justifyContent:'space-between' }}>
+                    <span>{oppTeamName}</span>
+                    {wantFromOpp.length > 0 && <span style={{ color:'#4ADE80' }}>{wantFromOpp.length} selected</span>}
                   </div>
-                  <input type="text" placeholder="Filter players..." value={oppSearch} onChange={e => setOppSearch(e.target.value)}
-                    style={{ width:'100%', padding:'0.375rem 0.75rem', borderRadius:'var(--radius-md)', border:'0.5px solid var(--border-default)', background:'var(--bg-secondary)', color:'var(--text-primary)', fontSize:'0.8125rem', fontFamily:'var(--font-body)', outline:'none', marginBottom:'0.5rem' }} />
-                  <div style={{ maxHeight:420, overflowY:'auto', display:'flex', flexDirection:'column', gap:5 }}>
+                  <input type="text" placeholder="Filter..." value={oppSearch} onChange={e => setOppSearch(e.target.value)}
+                    style={{ width:'100%', padding:'0.375rem 0.625rem', borderRadius:'var(--radius-md)', border:'0.5px solid var(--border-default)', background:'var(--bg-secondary)', color:'var(--text-primary)', fontSize:'0.8125rem', fontFamily:'var(--font-body)', outline:'none', marginBottom:'0.5rem' }} />
+                  <div style={{ maxHeight:500, overflowY:'auto', display:'flex', flexDirection:'column', gap:4 }}>
                     {oppFiltered.map(p => (
-                      <PlayerCard key={p.player_id} player={p} format={format} valMap={valMap}
-                        action={() => toggleWant(p)}
-                        actionLabel={wantIds.has(p.player_id) ? '✓ Want' : '+ Want'}
+                      <ItemCard key={p.player_id} item={p} format={format} valMap={valMap}
+                        onAction={() => toggleWant(p)}
+                        actionLabel={wantIds.has(p.player_id) ? '✓' : '+'}
                         actionColor={wantIds.has(p.player_id) ? '#4ADE80' : undefined}
                       />
                     ))}
                     {oppPicks.map(pk => (
-                      <PickCard key={pk.id} pick={pk}
-                        action={() => toggleWant(pk)}
-                        actionLabel={wantIds.has(pk.id) ? '✓ Want' : '+ Want'}
+                      <ItemCard key={pk.id} item={pk} format={format} valMap={valMap}
+                        onAction={() => toggleWant(pk)}
+                        actionLabel={wantIds.has(pk.id) ? '✓' : '+'}
                         actionColor={wantIds.has(pk.id) ? '#4ADE80' : undefined}
                       />
                     ))}
+                    {oppFiltered.length === 0 && oppPicks.length === 0 && (
+                      <div style={{ padding:'1.5rem', textAlign:'center', color:'var(--text-muted)', fontSize:'0.8125rem' }}>No players found</div>
+                    )}
                   </div>
                 </div>
 
                 {/* COL 2: My roster — mark untouchable */}
                 <div>
-                  <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:'0.5rem' }}>
-                    <SectionHeader title={myTeamName} count={myPlayers.length} />
-                    {untouchable.size > 0 && <span style={{ fontSize:'0.75rem', color:'#F87171', fontWeight:600 }}>{untouchable.size} untouchable</span>}
+                  <div style={{ fontSize:'0.75rem', fontWeight:600, color:'var(--text-muted)', letterSpacing:'0.06em', textTransform:'uppercase', marginBottom:'0.5rem', display:'flex', justifyContent:'space-between' }}>
+                    <span>{myTeamName}</span>
+                    {untouchable.size > 0 && <span style={{ color:'#F87171' }}>{untouchable.size} 🔒</span>}
                   </div>
-                  <input type="text" placeholder="Filter players..." value={mySearch} onChange={e => setMySearch(e.target.value)}
-                    style={{ width:'100%', padding:'0.375rem 0.75rem', borderRadius:'var(--radius-md)', border:'0.5px solid var(--border-default)', background:'var(--bg-secondary)', color:'var(--text-primary)', fontSize:'0.8125rem', fontFamily:'var(--font-body)', outline:'none', marginBottom:'0.5rem' }} />
-                  <div style={{ maxHeight:420, overflowY:'auto', display:'flex', flexDirection:'column', gap:5 }}>
+                  <input type="text" placeholder="Filter..." value={mySearch} onChange={e => setMySearch(e.target.value)}
+                    style={{ width:'100%', padding:'0.375rem 0.625rem', borderRadius:'var(--radius-md)', border:'0.5px solid var(--border-default)', background:'var(--bg-secondary)', color:'var(--text-primary)', fontSize:'0.8125rem', fontFamily:'var(--font-body)', outline:'none', marginBottom:'0.5rem' }} />
+                  <div style={{ maxHeight:500, overflowY:'auto', display:'flex', flexDirection:'column', gap:4 }}>
                     {myFiltered.map(p => (
-                      <PlayerCard key={p.player_id} player={p} format={format} valMap={valMap}
+                      <ItemCard key={p.player_id} item={p} format={format} valMap={valMap}
                         dimmed={untouchable.has(p.player_id)}
-                        action={() => toggleUntouchable(p.player_id)}
+                        onAction={() => toggleUntouchable(p.player_id)}
                         actionLabel={untouchable.has(p.player_id) ? '🔒' : '🔓'}
-                        actionColor={untouchable.has(p.player_id) ? '#F87171' : undefined}
+                        actionColor={untouchable.has(p.player_id) ? '#F87171' : 'var(--text-muted)'}
                       />
                     ))}
                     {myPicks.map(pk => (
-                      <PickCard key={pk.id} pick={pk}
-                        action={() => toggleUntouchable(pk.id)}
+                      <ItemCard key={pk.id} item={pk} format={format} valMap={valMap}
+                        dimmed={untouchable.has(pk.id)}
+                        onAction={() => toggleUntouchable(pk.id)}
                         actionLabel={untouchable.has(pk.id) ? '🔒' : '🔓'}
-                        actionColor={untouchable.has(pk.id) ? '#F87171' : undefined}
+                        actionColor={untouchable.has(pk.id) ? '#F87171' : 'var(--text-muted)'}
                       />
                     ))}
+                    {myFiltered.length === 0 && myPicks.length === 0 && (
+                      <div style={{ padding:'1.5rem', textAlign:'center', color:'var(--text-muted)', fontSize:'0.8125rem' }}>No players loaded</div>
+                    )}
                   </div>
                 </div>
 
-                {/* COL 3: What I'm giving */}
+                {/* COL 3: Offering */}
                 <div>
-                  <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:'0.5rem' }}>
-                    <SectionHeader title="Offering" count={givingMine.length} />
+                  <div style={{ fontSize:'0.75rem', fontWeight:600, color:'var(--text-muted)', letterSpacing:'0.06em', textTransform:'uppercase', marginBottom:'0.5rem', display:'flex', justifyContent:'space-between' }}>
+                    <span>Offering</span>
                     {givingMine.length > 0 && (
-                      <button onClick={() => setGivingMine([])} style={{ fontSize:'0.7rem', color:'#F87171', background:'none', border:'none', cursor:'pointer', fontFamily:'var(--font-body)' }}>Clear</button>
+                      <button onClick={() => { setGiving([]); setSuggestion(null); setStep(3); }} style={{ fontSize:'0.7rem', color:'#F87171', background:'none', border:'none', cursor:'pointer', fontFamily:'var(--font-body)' }}>Clear</button>
                     )}
                   </div>
-                  <div style={{ marginBottom:'0.5rem', padding:'0.375rem 0.75rem', background:'var(--bg-tertiary)', borderRadius:'var(--radius-md)', fontSize:'0.75rem', color:'var(--text-muted)' }}>
-                    Click players from your roster to add
+                  <div style={{ padding:'0.375rem 0.625rem', background:'var(--bg-tertiary)', borderRadius:'var(--radius-md)', fontSize:'0.75rem', color:'var(--text-muted)', marginBottom:'0.5rem' }}>
+                    Click players from your roster → or use Suggest
                   </div>
-                  <div style={{ display:'flex', flexDirection:'column', gap:5 }}>
-                    {givingMine.length === 0 && (
+                  <div style={{ display:'flex', flexDirection:'column', gap:4 }}>
+                    {givingMine.length === 0 ? (
                       <div style={{ padding:'2rem', textAlign:'center', border:'0.5px dashed var(--border-subtle)', borderRadius:'var(--radius-md)', fontSize:'0.8125rem', color:'var(--text-muted)' }}>
-                        Select players/picks from your roster
+                        Nothing offered yet
                       </div>
+                    ) : (
+                      givingMine.map((item, i) => (
+                        <ItemCard key={i} item={item} format={format} valMap={valMap}
+                          onAction={() => toggleGive(item)}
+                          actionLabel="✕"
+                          actionColor="#F87171"
+                        />
+                      ))
                     )}
-                    {givingMine.map((item, i) => (
-                      item.player_id
-                        ? <PlayerCard key={i} player={item} format={format} valMap={valMap}
-                            action={() => toggleGive(item)}
-                            actionLabel="✕"
-                            actionColor="#F87171"
-                          />
-                        : <PickCard key={i} pick={item}
-                            action={() => toggleGive(item)}
-                            actionLabel="✕"
-                            actionColor="#F87171"
-                          />
-                    ))}
-                    {/* Also allow clicking from my roster to add to give */}
-                    {myFiltered.filter(p => !untouchable.has(p.player_id) && !givingIds.has(p.player_id)).slice(0, 5).length > 0 && givingMine.length < 3 && (
+                    {/* Quick-add from my roster */}
+                    {givingMine.length < 4 && myPlayers.filter(p => !untouchable.has(p.player_id) && !givingIds.has(p.player_id)).length > 0 && (
                       <div style={{ marginTop:8 }}>
-                        <div style={{ fontSize:'0.7rem', color:'var(--text-muted)', marginBottom:4 }}>Quick add from your roster:</div>
-                        {myFiltered.filter(p => !untouchable.has(p.player_id) && !givingIds.has(p.player_id)).slice(0, 5).map(p => (
+                        <div style={{ fontSize:'0.7rem', color:'var(--text-muted)', marginBottom:4 }}>Click to add from your roster:</div>
+                        {myPlayers.filter(p => !untouchable.has(p.player_id) && !givingIds.has(p.player_id)).slice(0, 6).map(p => (
                           <button key={p.player_id} onClick={() => toggleGive(p)}
-                            style={{ display:'block', width:'100%', textAlign:'left', padding:'0.375rem 0.5rem', marginBottom:3, background:'transparent', border:'0.5px solid var(--border-subtle)', borderRadius:4, fontSize:'0.8125rem', color:'var(--text-secondary)', cursor:'pointer', fontFamily:'var(--font-body)' }}>
-                            + {p.full_name} ({fv(adjVal(p, format, valMap))})
+                            style={{ display:'block', width:'100%', textAlign:'left', padding:'0.375rem 0.625rem', marginBottom:3, background:'transparent', border:'0.5px solid var(--border-subtle)', borderRadius:4, fontSize:'0.8125rem', color:'var(--text-secondary)', cursor:'pointer', fontFamily:'var(--font-body)' }}>
+                            + {p.full_name} <span style={{ color:'var(--text-muted)' }}>({fv(adjVal(p, format, valMap))})</span>
+                          </button>
+                        ))}
+                        {myPicks.filter(p => !untouchable.has(p.id) && !givingIds.has(p.id)).slice(0, 3).map(pk => (
+                          <button key={pk.id} onClick={() => toggleGive(pk)}
+                            style={{ display:'block', width:'100%', textAlign:'left', padding:'0.375rem 0.625rem', marginBottom:3, background:'transparent', border:'0.5px solid var(--border-subtle)', borderRadius:4, fontSize:'0.8125rem', color:'var(--text-secondary)', cursor:'pointer', fontFamily:'var(--font-body)' }}>
+                            + {pk.label}{pk.original_owner ? ` (via ${pk.original_owner})` : ''} <span style={{ color:'var(--text-muted)' }}>({fv(pk.value)})</span>
                           </button>
                         ))}
                       </div>
