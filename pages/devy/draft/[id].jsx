@@ -143,13 +143,12 @@ export default function DevyDraftRoom() {
 
     if (draftData) {
       await loadPool(draftData);
-      // Determine if current user is commissioner
       const { data: { session: s } } = await supabase.auth.getSession();
       if (s && draftData.commissioner_id === s.user.id) setIsCommish(true);
-
-      // Set my roster from localStorage (set during draft setup)
       const storedRosterId = localStorage.getItem(`devy_draft_${draftId}_roster_id`);
       if (storedRosterId) setMyRosterId(parseInt(storedRosterId));
+      // Start timer immediately with fresh draft data
+      if (draftData.status === 'active') resetTimer(draftData);
     }
 
     setLoading(false);
@@ -175,36 +174,46 @@ export default function DevyDraftRoom() {
 
   // Pick timer with auto-pick on expiry
   const autoPickFiredRef = useRef(false);
+  const currentPickRef   = useRef(null);
+  const draftIdRef       = useRef(draftId);
 
-  function resetTimer() {
-    if (!draft?.seconds_per_pick || draft?.status !== 'active') return;
+  // Keep refs current so the interval closure always has fresh values
+  useEffect(() => { draftIdRef.current = draftId; }, [draftId]);
+
+  function resetTimer(activeDraft) {
+    const d = activeDraft || draft;
+    if (!d?.seconds_per_pick || d?.status !== 'active') return;
     clearInterval(timerRef.current);
-    pickStartRef.current = Date.now();
-    autoPickFiredRef.current = false;
-    setTimeLeft(draft.seconds_per_pick);
+    pickStartRef.current        = Date.now();
+    autoPickFiredRef.current    = false;
+    currentPickRef.current      = d.current_pick;
+    setTimeLeft(d.seconds_per_pick);
+
     timerRef.current = setInterval(() => {
-      const elapsed    = Math.floor((Date.now() - pickStartRef.current) / 1000);
-      const remaining  = Math.max(0, draft.seconds_per_pick - elapsed);
+      const elapsed   = Math.floor((Date.now() - pickStartRef.current) / 1000);
+      const remaining = Math.max(0, d.seconds_per_pick - elapsed);
       setTimeLeft(remaining);
+
       if (remaining === 0 && !autoPickFiredRef.current) {
         autoPickFiredRef.current = true;
         clearInterval(timerRef.current);
-        // Only commissioner fires the auto-pick to avoid duplicate requests
-        if (isCommish) {
-          fetch('/api/devy/auto-pick', {
-            method:  'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body:    JSON.stringify({ draft_id: draftId, overall: draft.current_pick }),
-          });
-        }
+        // Every browser fires — the API ignores duplicate requests for same pick
+        fetch('/api/devy/auto-pick', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({
+            draft_id: draftIdRef.current,
+            overall:  currentPickRef.current,
+          }),
+        }).catch(() => {});
       }
     }, 1000);
   }
 
   useEffect(() => {
-    if (draft?.status === 'active') resetTimer();
+    if (draft?.status === 'active') resetTimer(draft);
     return () => clearInterval(timerRef.current);
-  }, [draft?.status, draft?.current_pick, isCommish]);
+  }, [draft?.status, draft?.current_pick]);
 
   // Invites
   const [invites, setInvites]         = useState([]);
@@ -600,11 +609,15 @@ export default function DevyDraftRoom() {
                 {teams.map(team => {
                   const drafted = teamPicks(team.roster_id);
                   const futurePicks = picks.filter(p => p.current_roster_id === team.roster_id && !p.is_picked);
+                  const isCommishTeam = draft?.draft_order?.find(t => t.roster_id === team.roster_id)?.is_commish;
                   return (
                     <div key={team.roster_id} style={{ background:'var(--bg-secondary)', border:'0.5px solid var(--border-subtle)', borderRadius:'var(--radius-lg)', padding:'1rem' }}>
-                      <div style={{ fontSize:'0.875rem', fontWeight:700, color:'var(--text-primary)', marginBottom:'0.75rem', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
-                        {team.owner_name}
-                        {team.roster_id === myRosterId && <span style={{ fontSize:'0.7rem', padding:'1px 6px', borderRadius:99, background:'rgba(200,151,58,0.15)', color:'var(--gold-400)' }}>you</span>}
+                      <div style={{ fontSize:'0.875rem', fontWeight:700, color:'var(--text-primary)', marginBottom:'0.75rem', display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:4 }}>
+                        <span>{team.owner_name || team.team_name}</span>
+                        <div style={{ display:'flex', gap:4 }}>
+                          {isCommishTeam && <span style={{ fontSize:'0.7rem', padding:'1px 6px', borderRadius:99, background:'rgba(251,191,36,0.15)', color:'#FBBF24' }}>⚖ commish</span>}
+                          {team.roster_id === myRosterId && <span style={{ fontSize:'0.7rem', padding:'1px 6px', borderRadius:99, background:'rgba(200,151,58,0.15)', color:'var(--gold-400)' }}>you</span>}
+                        </div>
                       </div>
                       {drafted.length === 0
                         ? <div style={{ fontSize:'0.8125rem', color:'var(--text-muted)', fontStyle:'italic' }}>No picks yet</div>

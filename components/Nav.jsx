@@ -105,6 +105,7 @@ export default function Nav() {
                   <div className={styles.dropdownDivider} />
                   <Link href="/my-rankings" className={styles.dropdownItem} onClick={() => setUserMenu(false)}>📋 My rankings</Link>
                   <Link href="/tools" className={styles.dropdownItem} onClick={() => setUserMenu(false)}>🔧 Judge tools</Link>
+                  <Link href="/messages" className={styles.dropdownItem} onClick={() => setUserMenu(false)}>💬 Messages</Link>
                   <Link href="/notifications" className={styles.dropdownItem} onClick={() => { setUserMenu(false); setNotifCount(0); }}>
                     🔔 Notifications{notifCount > 0 && <span style={{ marginLeft:6, display:'inline-flex', alignItems:'center', justifyContent:'center', width:16, height:16, borderRadius:'50%', background:'#F87171', color:'#fff', fontSize:'0.6rem', fontWeight:700 }}>{notifCount}</span>}
                   </Link>
