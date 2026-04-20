@@ -1,8 +1,8 @@
 import Head from 'next/head';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useRouter } from 'next/router';
-import Nav from '../../components/Nav';
-import { supabase } from '../../lib/supabase';
+import Nav from '../../../components/Nav';
+import { supabase } from '../../../lib/supabase';
 
 const POS_COLORS = {
   QB:{ bg:'rgba(239,68,68,0.15)',  text:'#FCA5A5' },

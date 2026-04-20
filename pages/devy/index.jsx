@@ -1,8 +1,8 @@
 import Head from 'next/head';
 import Link from 'next/link';
 import { useState, useEffect } from 'react';
-import Nav from '../components/Nav';
-import { supabase } from '../lib/supabase';
+import Nav from '../../components/Nav';
+import { supabase } from '../../lib/supabase';
 
 export default function DevyHub() {
   const [drafts, setDrafts] = useState([]);
