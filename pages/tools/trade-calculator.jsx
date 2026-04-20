@@ -482,11 +482,28 @@ export default function TradeCalculator() {
 
               {/* Trade summary bar */}
               {(wantFromOpp.length > 0 || givingMine.length > 0) && (
-                <div style={{ background:'var(--bg-secondary)', border:'0.5px solid var(--border-default)', borderRadius:'var(--radius-lg)', padding:'1rem 1.25rem', marginBottom:'1rem', display:'grid', gridTemplateColumns:'1fr auto 1fr', gap:'0.75rem', alignItems:'center' }}>
+                <div style={{ background:'var(--bg-secondary)', border:'0.5px solid var(--border-default)', borderRadius:'var(--radius-lg)', padding:'1rem 1.25rem', marginBottom:'1rem', display:'grid', gridTemplateColumns:'1fr auto 1fr', gap:'0.75rem', alignItems:'start' }}>
                   <div>
-                    <div style={{ fontSize:'0.7rem', color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:4 }}>You give</div>
-                    <div style={{ fontSize:'1.25rem', fontWeight:700, color:'#F87171' }}>{fv(giveTotal)}</div>
-                    <div style={{ fontSize:'0.75rem', color:'var(--text-muted)' }}>{givingMine.length} asset{givingMine.length !== 1 ? 's':''}</div>
+                    <div style={{ fontSize:'0.7rem', color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:6 }}>
+                      {myTeamName} gives
+                    </div>
+                    <div style={{ fontSize:'1.25rem', fontWeight:700, color:'#F87171', marginBottom:6 }}>{fv(giveTotal)}</div>
+                    <div style={{ display:'flex', flexDirection:'column', gap:4 }}>
+                      {givingMine.map((item, i) => {
+                        const pos = item.position ? (POS_COLORS[item.position] || { bg:'rgba(156,163,175,0.15)', text:'#D1D5DB' }) : null;
+                        return (
+                          <div key={i} style={{ display:'flex', alignItems:'center', gap:6 }}>
+                            {pos
+                              ? <span style={{ display:'inline-block', padding:'1px 5px', borderRadius:3, fontSize:'0.65rem', fontWeight:700, background:pos.bg, color:pos.text, flexShrink:0 }}>{item.position}</span>
+                              : <span style={{ fontSize:'0.75rem' }}>🎟</span>
+                            }
+                            <span style={{ fontSize:'0.8125rem', color:'var(--text-primary)', fontWeight:500 }}>{item.full_name || item.label}</span>
+                            <span style={{ fontSize:'0.75rem', color:'var(--text-muted)', marginLeft:'auto', flexShrink:0 }}>{fv(adjVal(item, format, valMap))}</span>
+                          </div>
+                        );
+                      })}
+                      {givingMine.length === 0 && <div style={{ fontSize:'0.8125rem', color:'var(--text-muted)', fontStyle:'italic' }}>Nothing offered yet</div>}
+                    </div>
                   </div>
                   <div style={{ textAlign:'center' }}>
                     {verdict
@@ -496,9 +513,26 @@ export default function TradeCalculator() {
                     }
                   </div>
                   <div style={{ textAlign:'right' }}>
-                    <div style={{ fontSize:'0.7rem', color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:4 }}>You receive</div>
-                    <div style={{ fontSize:'1.25rem', fontWeight:700, color:'#4ADE80' }}>{fv(wantTotal)}</div>
-                    <div style={{ fontSize:'0.75rem', color:'var(--text-muted)' }}>{wantFromOpp.length} asset{wantFromOpp.length !== 1 ? 's':''}</div>
+                    <div style={{ fontSize:'0.7rem', color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:6 }}>
+                      {oppTeamName} gives
+                    </div>
+                    <div style={{ fontSize:'1.25rem', fontWeight:700, color:'#4ADE80', marginBottom:6 }}>{fv(wantTotal)}</div>
+                    <div style={{ display:'flex', flexDirection:'column', gap:4, alignItems:'flex-end' }}>
+                      {wantFromOpp.map((item, i) => {
+                        const pos = item.position ? (POS_COLORS[item.position] || { bg:'rgba(156,163,175,0.15)', text:'#D1D5DB' }) : null;
+                        return (
+                          <div key={i} style={{ display:'flex', alignItems:'center', gap:6 }}>
+                            <span style={{ fontSize:'0.75rem', color:'var(--text-muted)', flexShrink:0 }}>{fv(adjVal(item, format, valMap))}</span>
+                            <span style={{ fontSize:'0.8125rem', color:'var(--text-primary)', fontWeight:500 }}>{item.full_name || item.label}</span>
+                            {pos
+                              ? <span style={{ display:'inline-block', padding:'1px 5px', borderRadius:3, fontSize:'0.65rem', fontWeight:700, background:pos.bg, color:pos.text, flexShrink:0 }}>{item.position}</span>
+                              : <span style={{ fontSize:'0.75rem' }}>🎟</span>
+                            }
+                          </div>
+                        );
+                      })}
+                      {wantFromOpp.length === 0 && <div style={{ fontSize:'0.8125rem', color:'var(--text-muted)', fontStyle:'italic' }}>Nothing selected</div>}
+                    </div>
                   </div>
                 </div>
               )}
